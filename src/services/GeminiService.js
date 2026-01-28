@@ -126,6 +126,8 @@ class GeminiService {
             
             GENERAL SEARCHES: If the user asks for a general list (e.g., "most popular worlds") without any specific keyword or theme, use a broad keyword like "world" or "space" automatically. If they provide a theme (e.g., "art"), use that as the keyword.
             
+            ITERATIVE DISCOVERY: If a specific search (e.g., "mortgage calculator") returns 0 results, DO NOT GIVE UP. Use your understanding of context to try at least 2-3 broader or related keywords in sequence (e.g., "loan", "finance", "calculator", "bank") before reporting that nothing was found.
+            
             USER INTERFACE: Your web interface supports FULL MARKDOWN (Tables, Bold, Lists, Code blocks). Use them to provide a premium and readable experience.
             
             Use the following VIVERSE SDK reference if technical help is needed:
