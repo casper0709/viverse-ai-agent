@@ -19,6 +19,28 @@ VIVERSE AI Agent is a specialized, context-aware metaverse assistant designed to
 - `public/`: Frontend dashboard (HTML/CSS/JS).
   - `app.js`: Contains the `TabManager` and dynamic UI logic.
 - `docs/`: Knowledge base documents (SDK info, Portal URLs).
+- `skills/`: Reusable AI skill modules for VIVERSE integrations (auth, multiplayer, avatars, publishing, etc.).
+
+## 🧠 Skills (Knowledge Modules)
+
+Skills are task-focused guides that help AI assistants produce higher-quality implementation steps for common VIVERSE workflows.
+
+Each skill typically includes:
+- `SKILL.md`: when to use the skill, prerequisites, and step-by-step workflow
+- `patterns/`: reusable implementation patterns and troubleshooting notes
+- `examples/`: copyable usage examples
+
+Current skills:
+- `playcanvas-avatar-navigation`
+- `playcanvas-googlemaps-3dtiles`
+- `viverse-auth`
+- `viverse-avatar-sdk`
+- `viverse-leaderboard`
+- `viverse-multiplayer`
+- `viverse-world-publishing`
+- `vrma-animation-retargeting`
+
+For the full catalog and structure, see `skills/README.md`.
 
 ## 🚦 Getting Started
 
@@ -52,6 +74,18 @@ VIVERSE AI Agent is a specialized, context-aware metaverse assistant designed to
   ```bash
   npm start
   ```
+
+## ✅ Simple Usage
+
+1. Start the agent (`npm run dev`).
+2. Open the dashboard in your browser.
+3. Ask a concrete task, for example:
+   - "Integrate VIVERSE login in my app."
+   - "Set up matchmaking room create/join flow."
+   - "Help publish this world to VIVERSE."
+4. For best results, tell the assistant to load a specific skill first, e.g.:
+   - `Read skills/viverse-multiplayer/SKILL.md and implement move sync.`
+5. If behavior is unclear, check the matching document in `docs/` and related `skills/*/patterns`.
 
 ## 📖 Knowledge Base
 
