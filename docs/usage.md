@@ -2,6 +2,8 @@
 
 This guide explains how to run the local AI agent server and how to assign tasks to it using Gemini or other tools.
 
+> **New to the system?** See [skills-guide.md](./skills-guide.md) for all the ways to use the agent and skills — including using skills without running the server.
+
 ## 1. Prerequisites
 - Node.js installed.
 - A valid `GOOGLE_API_KEY` in your `.env` file.

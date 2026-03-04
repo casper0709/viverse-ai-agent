@@ -3,7 +3,7 @@ import logger from '../utils/logger.js';
 
 class SearchService {
     constructor() {
-        this.baseUrl = process.env.API_HUB_BASE_URL || 'https://api.viverse.com';
+        this.baseUrl = process.env.API_HUB_BASE_URL || 'https://world-api.viverse.com';
     }
 
     /**

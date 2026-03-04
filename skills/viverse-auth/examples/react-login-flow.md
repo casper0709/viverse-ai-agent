@@ -1,0 +1,173 @@
+# React Login Flow
+
+Complete React component for VIVERSE authentication.
+
+## ViverseService.js (Service Layer)
+
+```javascript
+class ViverseService {
+    constructor() {
+        this.client = null;
+        this.isInitialized = false;
+        this.userData = null;
+    }
+
+    async init() {
+        if (this.isInitialized) return true;
+
+        return new Promise((resolve) => {
+            let attempts = 0;
+            const check = () => {
+                attempts++;
+                const vSdk = window.viverse || window.VIVERSE_SDK;
+
+                if (vSdk?.client) {
+                    try {
+                        this.client = new vSdk.client({
+                            clientId: import.meta.env.VITE_VIVERSE_CLIENT_ID,
+                            domain: 'account.htcvive.com'
+                        });
+                        this.isInitialized = true;
+                        resolve(true);
+                    } catch (err) {
+                        console.error("SDK init failed:", err);
+                        resolve(false);
+                    }
+                } else if (attempts > 50) {
+                    resolve(false);
+                } else {
+                    setTimeout(check, 100);
+                }
+            };
+            check();
+        });
+    }
+
+    async checkAuth() {
+        if (!this.client?.checkAuth) return null;
+        const result = await this.client.checkAuth();
+        if (result) {
+            // Robust Profile Fetch: Try Avatar SDK -> getUserInfo -> getUser -> API
+            const accessToken = result.access_token;
+            let profile = null;
+            const vSdk = window.viverse || window.VIVERSE_SDK;
+
+            // 1. Avatar SDK (Preferred)
+            if (!profile && vSdk?.avatar) {
+                try {
+                    const appId = import.meta.env.VITE_VIVERSE_CLIENT_ID;
+                    const avatarClient = new vSdk.avatar({ 
+                        baseURL: 'https://sdk-api.viverse.com/', 
+                        accessToken,
+                        token: accessToken, // Shotgun: try all params
+                        appId: appId,
+                        clientId: appId
+                    });
+                    profile = await avatarClient.getProfile();
+                } catch (e) { console.warn('Strategy 1 failed', e); }
+            }
+
+            // 2. Client Methods (Fallbacks)
+            if (!profile && this.client.getUserInfo) {
+                try { profile = await this.client.getUserInfo(); } catch (e) {}
+            }
+            if (!profile && this.client.getUser) {
+                try { profile = await this.client.getUser(); } catch (e) {}
+            }
+
+            this.userData = {
+                displayName: profile?.name || profile?.displayName || result.account_id || 'VIVERSE User',
+                avatarUrl: profile?.activeAvatar?.avatarUrl || profile?.avatarUrl || null,
+                headIconUrl: profile?.activeAvatar?.headIconUrl || profile?.headIconUrl || null,
+                userId: result.account_id,
+                accessToken
+            };
+        }
+        return this.userData;
+    }
+
+    async login() {
+        if (!this.client?.loginWithWorlds) return null;
+        this.client.loginWithWorlds();
+    }
+
+    async logout() {
+        if (this.client?.logout) await this.client.logout();
+        this.userData = null;
+        window.location.reload();
+    }
+
+    getUserData() { return this.userData; }
+}
+
+export default new ViverseService();
+```
+
+## ViverseLayer.jsx (UI Component)
+
+```jsx
+import React, { useState, useEffect } from 'react';
+import viverseService from './ViverseService';
+
+const AVATAR_PLACEHOLDER = 'data:image/svg+xml,...'; // Default avatar SVG
+
+export default function ViverseLayer({ onUserChange }) {
+    const [user, setUser] = useState(null);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        (async () => {
+            const ok = await viverseService.init();
+            if (ok) {
+                const userData = await viverseService.checkAuth();
+                if (userData) {
+                    setUser(userData);
+                    onUserChange?.(userData);
+                }
+            }
+            setLoading(false);
+        })();
+    }, []);
+
+    const handleLogin = async () => {
+        setLoading(true);
+        await viverseService.login();
+    };
+
+    const handleLogout = async () => {
+        await viverseService.logout();
+        setUser(null);
+        onUserChange?.(null);
+    };
+
+    if (loading) return null;
+
+    if (!user) {
+        return (
+            <div className="viverse-overlay">
+                <button onClick={handleLogin} className="viverse-login-btn">
+                    Login with VIVERSE
+                </button>
+            </div>
+        );
+    }
+
+    return (
+        <div className="viverse-overlay">
+            <div className="viverse-user-profile">
+                <img src={user.avatarUrl || AVATAR_PLACEHOLDER} alt="Avatar" />
+                <div>
+                    <span>{user.displayName}</span>
+                    <button onClick={handleLogout}>Logout</button>
+                </div>
+            </div>
+        </div>
+    );
+}
+```
+
+## Environment Variables
+
+```env
+VITE_VIVERSE_CLIENT_ID=your-app-id-from-viverse-studio
+```

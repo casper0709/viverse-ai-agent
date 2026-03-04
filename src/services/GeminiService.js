@@ -29,6 +29,27 @@ class GeminiService {
             logger.warn('Error loading VIVERSE SDK docs, continuing with limited knowledge.', error);
         }
 
+        // Load Skills (SKILL.md summaries for each skill)
+        let skillsSummary = "";
+        try {
+            const skillsDir = path.resolve(process.cwd(), 'skills');
+            if (fs.existsSync(skillsDir)) {
+                const skillFolders = fs.readdirSync(skillsDir, { withFileTypes: true })
+                    .filter(d => d.isDirectory());
+
+                skillFolders.forEach(folder => {
+                    const skillFile = path.join(skillsDir, folder.name, 'SKILL.md');
+                    if (fs.existsSync(skillFile)) {
+                        const content = fs.readFileSync(skillFile, 'utf8');
+                        skillsSummary += `\n--- SKILL: ${folder.name} ---\n${content}\n`;
+                    }
+                });
+                logger.info(`Loaded ${skillFolders.length} skills.`);
+            }
+        } catch (error) {
+            logger.warn('Error loading skills, continuing without them.', error);
+        }
+
         // Define tools for the agent
         this.tools = [
             {
@@ -107,6 +128,20 @@ class GeminiService {
             }
         ];
 
+        // Add loadSkill tool for on-demand pattern loading
+        this.tools[0].functionDeclarations.push({
+            name: "loadSkill",
+            description: "Load a specific pattern or example file from a VIVERSE skill. Use this when you need detailed implementation guidance for a task.",
+            parameters: {
+                type: "OBJECT",
+                properties: {
+                    skillName: { type: "STRING", description: "Name of the skill folder (e.g., 'playcanvas-avatar-navigation', 'viverse-auth')" },
+                    fileName: { type: "STRING", description: "Relative path to the file within the skill (e.g., 'patterns/safe-physics-cleanup.md', 'examples/debug-tools.md')" }
+                },
+                required: ["skillName", "fileName"]
+            }
+        });
+
         this.model = this.genAI.getGenerativeModel({
             model: "gemini-2.0-flash",
             tools: this.tools,
@@ -121,6 +156,9 @@ class GeminiService {
             Secondary Capability (Code & Project): You can also help with technical tasks if specifically asked.
             3. Use 'discoverProject', 'listFiles', and 'readFile' to understand code.
             4. Use 'writeFile' and 'runCommand' to apply fixes or deploy projects (e.g., 'viverse publish').
+            5. Use 'loadSkill' to load detailed implementation patterns when performing SDK integration tasks.
+               Available skills: playcanvas-avatar-navigation, viverse-auth, viverse-avatar-sdk, viverse-world-publishing.
+               Always load relevant skill patterns before writing integration code.
             
             RAW DATA: If the user explicitly asks for "raw response," "raw data," or "JSON," print the exact JSON object you received from the tool.
             
@@ -132,7 +170,11 @@ class GeminiService {
             
             Use the following VIVERSE SDK reference if technical help is needed:
             
-            ${viverseKnowledge}`
+            ${viverseKnowledge}
+            
+            Available Skills Summary:
+            
+            ${skillsSummary}`
         });
     }
 
@@ -202,6 +244,17 @@ class GeminiService {
                             toolResult = { root: files, src: srcFiles };
                         } else if (name === "searchRooms") {
                             toolResult = await searchService.searchRooms(args);
+                        } else if (name === "loadSkill") {
+                            try {
+                                const skillPath = path.resolve(process.cwd(), 'skills', args.skillName, args.fileName);
+                                if (fs.existsSync(skillPath)) {
+                                    toolResult = fs.readFileSync(skillPath, 'utf8');
+                                } else {
+                                    toolResult = { error: `Skill file not found: ${args.skillName}/${args.fileName}` };
+                                }
+                            } catch (e) {
+                                toolResult = { error: `Failed to load skill: ${e.message}` };
+                            }
                         }
 
                         toolResponses.push({
