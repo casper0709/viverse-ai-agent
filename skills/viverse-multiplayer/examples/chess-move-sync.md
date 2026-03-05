@@ -118,6 +118,11 @@ Healthy receiver:
 - `rcv bridge: top` or `rcv bridge: general`
 - `[Multiplayer] RECV { type: "fen", ... }`
 
+Room lifecycle healthy:
+- Host leave -> room disappears from list (or is marked closed)
+- Joiner leave -> room remains with `Players: 1/2` for host
+- Rejoin path works without `"game already started"` unless host already started
+
 ---
 
 ## Role Assignment

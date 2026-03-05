@@ -146,6 +146,22 @@ If sender logs appear but receiver logs do not, the issue is in receive wiring, 
    ```
    - Also unregister room event listeners (`onJoinRoom`, `onGameStartNotify`, etc.) on cleanup
 
+4. **Host/joiner lifecycle desync after leave**
+   - Symptom A: host leaves, joiner still sees room in list but cannot join
+   - Symptom B: joiner leaves/rejoins, creator UI says left or cannot start game
+   - Fix:
+   ```javascript
+   // host leave flow
+   disconnectMultiplayer();
+   await closeRoom();
+   await leaveRoom();
+
+   // joiner leave flow
+   disconnectMultiplayer();
+   await leaveRoom();
+   ```
+   - Do not auto-force creator back to lobby on `onRoomActorChange` when actor count drops below 2; keep creator in room UI and wait for rejoin.
+
 ## Reference
 
 - [chess-move-sync.md](../examples/chess-move-sync.md) — Full example

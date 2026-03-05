@@ -32,6 +32,17 @@ disconnectMultiplayer();
 disconnectMatchmaking();
 ```
 
+For repeated test loops, prefer a **fresh actor session id** (instead of a static account id) to prevent stale server-side room rebinding:
+
+```javascript
+const actorSessionId = `${accountId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+await matchmakingClient.setActor({
+  session_id: actorSessionId,
+  name: user.displayName,
+  properties: {},
+});
+```
+
 **Create**:
 ```javascript
 const res = await matchmakingClient.createRoom({
@@ -107,3 +118,12 @@ When sending, call `mp.general.sendMessage(payload)` directly (do not detach the
 ## 5. Sync Game State
 
 Use `general.sendMessage` / `general.onMessage` for custom state. See [chess-move-sync.md](../examples/chess-move-sync.md).
+
+## 6. Leave / Close Room Order (Important)
+
+To avoid orphaned or unjoinable rooms:
+
+- **Host leave flow**: `disconnect multiplayer -> closeRoom -> leaveRoom`
+- **Joiner leave flow**: `disconnect multiplayer -> leaveRoom`
+
+If host leaves with `leaveRoom` before `closeRoom`, room entries may remain visible but fail to join.

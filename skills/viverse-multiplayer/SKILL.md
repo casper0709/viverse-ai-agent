@@ -143,6 +143,9 @@ mp.general.onMessage((raw) => {
 - **Send context bug**: Do not call detached send refs. Use `mp.general.sendMessage(payload)` directly, otherwise Play SDK may throw `Cannot read properties of undefined (reading 'sdk')`.
 - **Receive channel mismatch**: Listen on both `mp.onMessage` and `mp.general.onMessage` (or bridge both to one handler). Some environments only fire one channel.
 - **Stale room reuse**: Before create/join during repeated tests, best-effort `closeRoom()` + `leaveRoom()`, then disconnect matchmaking/multiplayer to avoid joining an old room and `"game already started"` errors.
+- **Session rebinding**: Using a static `session_id` across repeated tests can rebind to stale rooms. Prefer a fresh client session id per connect cycle.
+- **Leave order matters**: Host should `closeRoom()` before/with `leaveRoom()` after disconnecting multiplayer; otherwise rooms can remain visible but unjoinable.
+- **Creator state drift**: Do not auto-kick creator UI on `onRoomActorChange` when actor count drops below 2; keep room state so a rejoiner can start again.
 
 ## Example Files
 
