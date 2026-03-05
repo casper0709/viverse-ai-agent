@@ -140,6 +140,19 @@ const fetchTopRankings = async (appId) => {
 // }
 ```
 
+## App Scope & Naming
+
+Leaderboard lookups are scoped by **App ID + Leaderboard Name**.
+
+- You can reuse the same leaderboard API name (e.g. `ChessBattle2D`) across multiple apps.
+- Each app must still have that leaderboard configured in Studio.
+- If app A has the name configured and app B does not, app B calls will fail even though the name works in app A.
+
+Practical setup for multi-app projects (test/prod):
+- Keep one env name (e.g. `VITE_VIVERSE_LEADERBOARD_NAME=ChessBattle2D`)
+- Configure the same API name in each app’s Studio settings
+- Ensure the runtime app id (`VITE_VIVERSE_CLIENT_ID`) points to the intended app
+
 ## Gotchas
 
 > [!WARNING]
