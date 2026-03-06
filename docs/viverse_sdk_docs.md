@@ -47,7 +47,7 @@ Always check both:
   - `new MultiplayerClient(roomId, appId, sessionId)`
   - `general.sendMessage`, `general.onMessage`
 - **Leaderboard SDK**
-  - `new vSdk.gameDashboard({ token })`
+  - `new vSdk.gameDashboard({ token, baseURL, communityBaseURL })`
   - `uploadLeaderboardScore`, `getLeaderboard`
 
 ## Integration Blueprint (Web/React)
@@ -75,6 +75,33 @@ Critical notes:
 - call `setActor` after connect
 - handle response shape differences (`res.room ?? res`)
 - register start/message handlers before or around init/start
+
+## Leaderboard Debug Quick Reference
+
+When leaderboard shows upload success but list is empty:
+
+1. Split write vs read path:
+   - if upload succeeds, treat write path as healthy
+   - then debug read params/response shape
+2. Use token from `client.getToken()` when available; fallback to `checkAuth().access_token`.
+3. Prefer 0-based ranges in queries (`range_start: 0`, `range_end: 9`).
+4. Try fallback read configs:
+   - `global + around_user=false`
+   - `global + around_user=true`
+   - `local + around_user=false`
+5. Parse multiple ranking response shapes:
+   - `res.rankings`
+   - `res.leaderboard_rankings`
+   - nested data objects
+
+Recommended runtime diagnostic tuple:
+
+`diag(appId=..., leaderboard=..., tokenSource=..., token=present)`
+
+Interpretation:
+
+- `Unexpected token '<'` usually means app/name/token mismatch returned HTML, not JSON.
+- Browser-extension errors (`chrome-extension://...`) are unrelated unless they reference your app bundle path.
 
 ## Publish Safety Checklist
 

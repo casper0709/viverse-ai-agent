@@ -38,6 +38,21 @@ Use this when a project needs:
 - [ ] App uses one auth state source (App/AuthProvider)
 - [ ] UI does not render raw `account_id` as display name
 
+## Mandatory Compliance Gates (MUST PASS)
+
+These are release blockers for any auth integration task:
+
+1. **MUST** implement robust profile chain in order:
+   - Avatar SDK `getProfile()`
+   - auth client `getUserInfo()`
+   - auth client `getUser()`
+   - auth client `getProfileByToken(accessToken)`
+   - direct API fallback (`/SS/Profiles/v3/Me`)
+2. **MUST** run profile fallback calls against the auth client where specified above (not only avatar client).
+3. **MUST NOT** display `account_id` (full or partial) in UI display name.
+4. **MUST** keep one top-level auth state source (`App`/provider), then pass props/context down.
+5. **MUST** rebuild before publish after App ID/env changes.
+
 ## Implementation Workflow
 
 ### 1. Initialize the Client
@@ -161,7 +176,7 @@ function App() {
 
 - Prefer profile fields (`name`, `displayName`, `display_name`, `userName`, `email`) for UI.
 - Treat raw `account_id` as an internal identifier only.
-- If profile is missing, use a generic fallback like `VIVERSE Player` (or masked form), not full UUID.
+- If profile is missing, use a generic fallback like `VIVERSE Player`.
 - Surface avatar via `headIconUrl`/`activeAvatar.headIconUrl` when available.
 
 ## Verification Checklist
@@ -169,6 +184,7 @@ function App() {
 - `checkAuth()` returns `access_token` and `account_id`
 - profile fetch returns at least one of: display name, email, avatar
 - UI shows profile identity, not raw UUID
+- UI does not show partial UUID/account fragments either (for example `VIVERSE Player ab12cd`)
 
 ## Critical Gotchas
 
@@ -181,7 +197,7 @@ function App() {
 - **`unauthorized origin` console noise**: Logs like `Received message from unauthorized origin: https://www.viverse.com` commonly indicate parent-iframe auth security rejecting the handshake (usually App ID mismatch, or redirect URI/origin not registered in Studio). Verify App ID + Studio auth settings together.
 - **Duplicate auth hooks create stale UI**: Do not call `useViverseAuth()` in multiple top-level components independently (for example in both `App` and `AuthGate`). Keep one source of truth in `App`, then pass `user/loading/error/login/logout` down via props/context. This prevents "logout button looks fake" and "user info not updating after account switch" behavior caused by desynced local hook state.
 - **Logout does not always mean account switch prompt**: VIVERSE SSO can keep a parent session. App-side logout should still clear local state/client and run `checkAuth()` again, but switching to another account may still require explicit SSO sign-out at platform level.
-- **Do not expose raw account IDs in UI names**: Profile fetch can fail or return sparse data. Never render `account_id` directly as display name. Prefer profile name/email, then a generic fallback like `VIVERSE Player ab12cd`.
+- **Do not expose account IDs in UI names**: Profile fetch can fail or return sparse data. Never render `account_id` directly or partially as display name. Prefer profile name/email, then generic `VIVERSE Player`.
 
 ## References
 

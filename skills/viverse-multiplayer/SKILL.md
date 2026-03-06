@@ -30,6 +30,7 @@ Use when a project needs:
 2. VIVERSE SDK loaded:
    ```html
    <script src="https://www.viverse.com/static-assets/viverse-sdk/index.umd.cjs"></script>
+   <script src="https://www.viverse.com/static-assets/play-sdk/1.0.1/play-sdk.umd.js"></script>
    ```
 3. App ID from [VIVERSE Studio](https://studio.viverse.com/).
 4. Stable actor identity input (account id + per-connect unique suffix).
@@ -39,6 +40,7 @@ Use when a project needs:
 - [ ] `VITE_VIVERSE_CLIENT_ID` matches target app
 - [ ] User auth is valid (has account id/token)
 - [ ] SDK namespace checked with `window.viverse || window.VIVERSE_SDK`
+- [ ] Play SDK namespace fallback checked (`window.play` / `window.Play`) for MultiplayerClient
 - [ ] You have cleanup logic for stale rooms
 - [ ] You have fallback sync path (room properties) if messages drop
 
@@ -48,7 +50,7 @@ Use when a project needs:
 
 ```javascript
 const v = window.viverse || window.VIVERSE_SDK;
-const PlayClass = v.Play || v.play;
+const PlayClass = v.Play || v.play || window.play?.Play || window.play?.play || window.Play;
 globalThis.playClient = new PlayClass();
 globalThis.matchmakingClient = await playClient.newMatchmakingClient(appId);
 ```
@@ -94,7 +96,10 @@ Joiner side listens for `onGameStartNotify`.
 ### 5) Init MultiplayerClient for sync
 
 ```javascript
-const MClient = (v?.play || v?.Play)?.MultiplayerClient;
+const MClient =
+  (v?.play || v?.Play)?.MultiplayerClient ||
+  window.play?.MultiplayerClient ||
+  window.Play?.MultiplayerClient;
 const mp = new MClient(roomId, appId, userSessionId);
 await mp.init({ modules: { general: { enabled: true } } });
 ```
@@ -126,6 +131,31 @@ Before create/join in repeated tests:
 
 This prevents stale-room rebinding and "game already started" failures.
 
+### Lobby UX requirements (must-have)
+
+- Show a dedicated `Leave Room` button whenever user is inside a room (host and joiner).
+- `Back` should run full lifecycle cleanup; `Leave Room` should leave current room but keep matchmaking connected.
+- Host leave order must remain:
+  1. disconnect multiplayer
+  2. close room
+  3. leave room
+- Joiner leave order must remain:
+  1. disconnect multiplayer
+  2. leave room
+- After leave/create/join failure, refresh room list immediately to remove stale or not-joinable entries from UI.
+- Block `Start Match` until room has required player count (for 1v1, `2/2`).
+
+### Mobile lifecycle + zombie-session prevention
+
+- Treat `visibilitychange` / `pagehide` as lifecycle events:
+  - if app is backgrounded in active session for too long (for example >10s), return to lobby and run cleanup.
+  - on `pagehide`, best-effort call multiplayer lifecycle cleanup.
+- Add in-game heartbeat messages from both peers (for example every 2s).
+- Host tracks peer heartbeat timeout (for example 12s):
+  - if timed out, terminate session gracefully and clean room.
+- Handle WebGL context loss (`webglcontextlost`) on mobile resume:
+  - trigger session interruption flow and return to lobby rather than keeping a broken white screen.
+
 ## Verification Checklist
 
 - [ ] Two different users can create/join/start
@@ -138,6 +168,7 @@ This prevents stale-room rebinding and "game already started" failures.
 ## Critical Gotchas
 
 - `setActor` must run after matchmaking connect.
+- If `Start Match` fails with `Multiplayer SDK missing`, Play SDK namespace resolution is incomplete; check both `window.viverse` and `window.play/window.Play` and ensure play-sdk script is loaded.
 - Register/start handlers before calling `startGame` to avoid missed events.
 - Use `mp.general.sendMessage(...)` with bound context; avoid detached fn refs.
 - Bridge both `mp.onMessage` and `mp.general.onMessage` in mixed environments.

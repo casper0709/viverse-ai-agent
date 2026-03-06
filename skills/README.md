@@ -28,6 +28,9 @@ The agent auto-loads SKILL.md summaries on startup. When it detects a task match
 | [playcanvas-avatar-navigation](./playcanvas-avatar-navigation/) | Physics-based avatar movement in PlayCanvas + Ammo.js scenes |
 | [viverse-auth](./viverse-auth/) | VIVERSE Login SDK integration (SSO, user profiles) |
 | [viverse-avatar-sdk](./viverse-avatar-sdk/) | Loading VIVERSE user avatars (GLB/VRM) into 3D scenes |
+| [viverse-r3f-foundation](./viverse-r3f-foundation/) | R3F + @react-three/viverse mini-game foundation for browser projects |
+| [viverse-r3f-profile-ui](./viverse-r3f-profile-ui/) | Profile/player-tag UI patterns using `useViverseProfile()` |
+| [viverse-threejs-vanilla-foundation](./viverse-threejs-vanilla-foundation/) | Vanilla Three.js + VIVERSE integration foundation without React |
 | [viverse-leaderboard](./viverse-leaderboard/) | Global leaderboards via VIVERSE gameDashboard SDK |
 | [viverse-multiplayer](./viverse-multiplayer/) | Matchmaking & Play SDK — rooms, create/join, custom state sync |
 | [viverse-world-publishing](./viverse-world-publishing/) | Publishing PlayCanvas projects to VIVERSE Worlds |

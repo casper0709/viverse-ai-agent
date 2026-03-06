@@ -46,9 +46,26 @@ const mp = new (vSdk.play || vSdk.Play).MultiplayerClient(roomId, appId, session
 ### Leaderboard
 
 ```javascript
-const dashboard = new vSdk.gameDashboard({ token: accessToken });
+const dashboard = new vSdk.gameDashboard({
+  token: accessToken,
+  baseURL: "https://www.viveport.com/",
+  communityBaseURL: "https://www.viverse.com/",
+});
 await dashboard.uploadLeaderboardScore(appId, [{ name, value }]);
 await dashboard.getLeaderboard(appId, query);
+```
+
+Leaderboard query defaults that are robust in practice:
+
+```javascript
+const query = {
+  name,
+  range_start: 0,
+  range_end: 9,
+  region: "global",
+  time_range: "alltime",
+  around_user: false,
+};
 ```
 
 ## High-Impact Best Practices
@@ -58,6 +75,7 @@ await dashboard.getLeaderboard(appId, query);
 - Match App ID across env, runtime config, and publish target.
 - For turn-based multiplayer, send full state snapshots + catch-up flow.
 - Rebuild after env/App ID changes before publishing.
+- For leaderboard incidents, log `appId`, `leaderboardName`, `value`, token source, and fetched row count.
 
 ## CLI Essentials
 

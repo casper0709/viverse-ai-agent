@@ -23,6 +23,9 @@ Read skills/viverse-auth/SKILL.md and integrate auth into my React app.
 ## Skill Selection Matrix
 
 - `viverse-auth`: login, profile, SSO handling
+- `viverse-r3f-foundation`: React Three Fiber + VIVERSE game bootstrap
+- `viverse-r3f-profile-ui`: in-world profile tag/avatar UI for R3F
+- `viverse-threejs-vanilla-foundation`: Three.js-only VIVERSE bootstrap (no React)
 - `viverse-multiplayer`: rooms, game start, state sync
 - `viverse-leaderboard`: upload/fetch rankings
 - `viverse-avatar-sdk`: 3D avatar loading
