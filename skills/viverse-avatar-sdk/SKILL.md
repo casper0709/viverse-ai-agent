@@ -7,7 +7,7 @@ tags: [viverse, avatar, glb, vrm, playcanvas]
 
 # VIVERSE Avatar SDK
 
-Load a user's VIVERSE avatar into your 3D scene. Avatars are GLB files hosted by VIVERSE, accessible after authentication.
+Load authenticated user avatars (GLB/VRM) into 3D scenes with robust fallback behavior.
 
 ## When To Use This Skill
 
@@ -16,12 +16,20 @@ Use this when a project needs:
 - Load a GLB/VRM model into PlayCanvas or Three.js
 - Replace a placeholder sphere with the real avatar model
 
-## Prerequisites
+## Read Order
 
-- User authenticated via the [viverse-auth](../viverse-auth/) skill
-- A 3D engine (PlayCanvas, Three.js, Babylon.js) capable of loading GLB files
+1. This file
+2. [patterns/avatar-animation.md](patterns/avatar-animation.md) if VRMA animation is needed
+3. [examples/glb-avatar-loader.md](examples/glb-avatar-loader.md)
 
-## Getting the Avatar URL
+## Preflight
+
+- [ ] Auth completed and `access_token` available
+- [ ] SDK available via `window.viverse || window.VIVERSE_SDK`
+- [ ] Scene runtime can load GLB container assets
+- [ ] Placeholder avatar path exists for failure cases
+
+## Get Profile + Avatar URL
 
 After `checkAuth()` returns an `access_token`, use the **Avatar SDK** to fetch profile data:
 
@@ -33,143 +41,63 @@ const avatarClient = new vSdk.avatar({
 });
 
 const profile = await avatarClient.getProfile();
-// profile.name → user's display name
-// profile.activeAvatar?.headIconUrl → 2D avatar thumbnail
-// profile.activeAvatar?.avatarUrl → GLB avatar file URL (for 3D)
 ```
 
 > [!CAUTION]
 > `checkAuth()` does **NOT** return avatar URLs or display name. You must use the Avatar SDK `getProfile()` method.
 
-## Loading GLB into PlayCanvas
+Use:
+- `profile.activeAvatar?.avatarUrl` for 3D model
+- `profile.activeAvatar?.headIconUrl` for 2D UI
+
+## PlayCanvas Load Pattern (Core)
 
 ```javascript
-async function loadAvatar(app, avatarUrl, position) {
-    // TIP: If avatarUrl is missing, try deriving from headIconUrl:
-    // url = headIconUrl.replace('filetype=headicon', 'filetype=model&lod=original');
-
-    if (!avatarUrl) {
-        console.warn('No avatar URL — using placeholder sphere');
-        return createPlaceholderAvatar(app, position);
-    }
-
-    return new Promise((resolve, reject) => {
-        // VRM Support: Use explicit pc.Asset to force GLB parser
-        // The URL might vary (e.g. filetype=vrm or filetype=model), so we force the handler.
-        const asset = new pc.Asset("avatar-asset", "container", {
-            url: avatarUrl,
-            filename: "avatar.glb" // Critical: Forces container/glb handler
-        });
-
-        asset.on('load', () => {
-            try {
-                const entity = asset.resource.instantiateRenderEntity();
-                entity.name = 'avatar';
-                app.root.addChild(entity);
-                entity.setLocalPosition(position.x, position.y, position.z);
-
-                // Scale Normalization (VRM units vary)
-                // 1. Force update transform to get accurate bounds
-                entity.syncHierarchy(); 
-                
-                // 2. Calculate bounds
-                const bounds = calculateEntityBounds(entity);
-                const currentHeight = bounds.halfExtents.y * 2;
-                
-                // 3. Rescale to standard height (e.g. 1.75m)
-                if (currentHeight > 0.1) {
-                    const targetHeight = 1.75;
-                    const scale = targetHeight / currentHeight;
-                    entity.setLocalScale(scale, scale, scale);
-                }
-
-                resolve(entity);
-            } catch (e) {
-                console.error("Avatar instantiation failed:", e);
-                resolve(createPlaceholderAvatar(app, position));
-            }
-        });
-
-        // Handle load errors (e.g. 400 Bad Request if URL is wrong)
-        asset.on('error', (err) => {
-             console.warn("Avatar load error:", err);
-             resolve(createPlaceholderAvatar(app, position));
-        });
-
-        app.assets.add(asset);
-        app.assets.load(asset);
-    });
-}
-```
-
-## Placeholder Avatar (Fallback)
-
-When no avatar URL is available:
-
-```javascript
-function createPlaceholderAvatar(app, position) {
-    const avatar = new pc.Entity('avatar');
-    avatar.addComponent('render', { type: 'sphere' });
-    const mat = new pc.StandardMaterial();
-    mat.diffuse = new pc.Color(0.2, 0.8, 0.3);
-    mat.update();
-    if (avatar.render?.meshInstances[0]) {
-        avatar.render.meshInstances[0].material = mat;
-    }
-    avatar.setLocalScale(1.5, 1.5, 1.5);
-    avatar.setLocalPosition(position.x, position.y, position.z);
-    app.root.addChild(avatar);
-    return avatar;
-}
-```
-
-## Adding Physics to the Avatar
-
-After loading the visual model, attach physics components for navigation:
-
-```javascript
-// Add physics AFTER the model is loaded
-avatar.addComponent('rigidbody', {
-    type: 'dynamic',
-    mass: 2,
-    friction: 0.5,
-    restitution: 0,
-    angularDamping: 0.99,
-    angularFactor: pc.Vec3.ZERO
-});
-avatar.addComponent('collision', {
-    type: 'sphere',
-    radius: 0.75
+const asset = new pc.Asset("avatar-asset", "container", {
+  url: avatarUrl,
+  filename: "avatar.glb", // force GLB/container handler
 });
 
-avatar.rigidbody.teleport(position.x, position.y, position.z);
-avatar.rigidbody.activate();
+asset.on("load", () => {
+  const entity = asset.resource.instantiateRenderEntity();
+  app.root.addChild(entity);
+  // Normalize scale to target height if needed.
+});
+
+asset.on("error", () => {
+  // Fallback to placeholder avatar
+});
 ```
 
-See [avatar-controller.md](../playcanvas-avatar-navigation/patterns/avatar-controller.md) for full movement controls.
+## Fallback Strategy
+
+If avatar URL load fails, always render a placeholder avatar so gameplay continues.
+
+## Verification Checklist
+
+- [ ] Auth token is present before avatar fetch
+- [ ] Profile returns display info and/or avatar URL
+- [ ] Avatar loads successfully in target scene runtime
+- [ ] Placeholder appears on URL/decode failure
+- [ ] No hard crash when avatar asset fails
+
+## Animation Note (VRMA)
+
+For VIVERSE VRMA retargeting:
+- Target `Normalized_Avatar_*` bones.
+- Prefer manual sampling workflow from [patterns/avatar-animation.md](patterns/avatar-animation.md).
 
 ## Gotchas
 
-- **CORS**: Avatar URLs from VIVERSE CDN may require CORS headers. PlayCanvas handles this for GLB loading.
-- **VRM vs GLB**: VIVERSE avatars may be VRM format (extension of GLB). PlayCanvas loads them as standard GLB containers.
-- **Scale variance**: Different avatars have different scales. Always normalize height after loading.
-- **Mock mode**: For local development without VIVERSE login, use `null` avatar URL to trigger the placeholder.
-- **Dual bone hierarchy**: VIVERSE avatars have TWO bone sets — `Avatar_*` (original, mesh-bound) and `Normalized_Avatar_*` (VRM 1.0, identity rest). Always **target Normalized** for VRMA animations.
-- **AnimComponent doesn't work for VRMA**: PlayCanvas AnimBinder ignores modified `entityPath` values. Use **manual animation sampling** instead (see [avatar-animation.md](patterns/avatar-animation.md)).
-- **upside-down avatar**: Applying VRM 1.0 rotations to `Avatar_*` bones causes flipped orientation. Target `Normalized_Avatar_*` bones.
-- **glTF JSON unavailable**: PlayCanvas discards raw glTF JSON after parsing (`_parser` is `undefined`). Use bone name normalization instead.
-- **Bone naming aliases needed**: VIVERSE uses `Spine1`/`Spine2` (not `Chest`/`UpperChest`), `HandThumb1`/`2`/`3` (not `ThumbMetacarpal`/`Proximal`/`Distal`), `EyeL`/`EyeR` (not `LeftEye`/`RightEye`).
+- Avatar SDK requires auth token; `checkAuth()` alone has no avatar URL.
+- VIVERSE avatars may be VRM-backed GLB; force container handler where needed.
+- Scale differs across avatars; normalize height post-load.
+- Use placeholder fallback to avoid hard failure.
+- For VRMA, use normalized bones and manual sampling pattern.
 
-## Pattern Files
+## References
 
-| Pattern | Purpose |
-|---------|---------|
-| [avatar-animation.md](patterns/avatar-animation.md) | Manual VRMA animation sampling with bone normalization (the correct approach) |
-| [avatar-animation-troubleshooting.md](patterns/avatar-animation-troubleshooting.md) | Step-by-step T-pose debugging, root causes, real-world debugging timeline |
-
-## Example Files
-
-| Example | Purpose |
-|---------|---------|
-| [glb-avatar-loader.md](examples/glb-avatar-loader.md) | End-to-end avatar loading example |
-
+- [viverse-auth](../viverse-auth/SKILL.md)
+- [patterns/avatar-animation.md](patterns/avatar-animation.md)
+- [patterns/avatar-animation-troubleshooting.md](patterns/avatar-animation-troubleshooting.md)
+- [examples/glb-avatar-loader.md](examples/glb-avatar-loader.md)

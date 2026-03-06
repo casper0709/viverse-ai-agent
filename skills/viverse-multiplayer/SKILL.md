@@ -7,58 +7,67 @@ tags: [viverse, multiplayer, matchmaking, play-sdk, rooms, sync]
 
 # VIVERSE Multiplayer Integration
 
-Add real-time multiplayer to web games using the VIVERSE Matchmaking & Play SDK. Supports room create/join, player sync, and custom game state.
+Add online multiplayer with VIVERSE Matchmaking + Play SDK for room lifecycle and in-game sync.
 
 ## When To Use This Skill
 
 Use when a project needs:
-- Online 2+ player games (e.g. chess, card games)
-- Room-based matchmaking (create room, join room, list rooms)
-- Custom state sync between players (moves, scores, events)
-- Turn-based or real-time multiplayer
+- Online 2+ player rooms
+- Create/join/start game flow
+- Custom state sync (turn-based or real-time)
+- Reliable rejoin/leave behavior between test sessions
+
+## Read Order (Important)
+
+1. This file (workflow + safety rules)
+2. [patterns/matchmaking-flow.md](patterns/matchmaking-flow.md)
+3. [patterns/move-sync-reliability.md](patterns/move-sync-reliability.md)
+4. [examples/chess-move-sync.md](examples/chess-move-sync.md) for turn-based games
 
 ## Prerequisites
 
-1. **VIVERSE Auth** — User must be logged in. Use `account_id` from `checkAuth` as `session_id`.
-2. **VIVERSE SDK** in `index.html`:
+1. User authenticated (`checkAuth` success).
+2. VIVERSE SDK loaded:
    ```html
    <script src="https://www.viverse.com/static-assets/viverse-sdk/index.umd.cjs"></script>
    ```
-3. **App ID** from [VIVERSE Studio](https://studio.viverse.com/).
+3. App ID from [VIVERSE Studio](https://studio.viverse.com/).
+4. Stable actor identity input (account id + per-connect unique suffix).
 
-## Quick-Start
+## Preflight Checklist
 
-### 1. Initialize Play & Matchmaking Clients
+- [ ] `VITE_VIVERSE_CLIENT_ID` matches target app
+- [ ] User auth is valid (has account id/token)
+- [ ] SDK namespace checked with `window.viverse || window.VIVERSE_SDK`
+- [ ] You have cleanup logic for stale rooms
+- [ ] You have fallback sync path (room properties) if messages drop
+
+## Implementation Workflow
+
+### 1) Init Play + Matchmaking
 
 ```javascript
 const v = window.viverse || window.VIVERSE_SDK;
 const PlayClass = v.Play || v.play;
 globalThis.playClient = new PlayClass();
-
 globalThis.matchmakingClient = await playClient.newMatchmakingClient(appId);
 ```
 
-> [!IMPORTANT]
-> The SDK may expose `v.Play` or `v.play` (capitalization varies). Check both.
-
-### 2. Wait for Connection, Then Set Actor
-
-**Do not** call `setActor` immediately — the matchmaking client connects asynchronously. Subscribe to `onConnect`:
+### 2) Wait for connect, then set actor
 
 ```javascript
 matchmakingClient.on("onConnect", async () => {
   await matchmakingClient.setActor({
-    session_id: user.account_id,  // from auth
+    session_id: actorSessionId, // recommended: account-based + per-connect suffix
     name: user.displayName,
-    properties: {}
+    properties: {},
   });
 });
 ```
 
-### 3. Create or Join Room
+### 3) Create or join room
 
 ```javascript
-// Create
 const room = await matchmakingClient.createRoom({
   name: "My Game Room",
   mode: "Room",
@@ -67,25 +76,22 @@ const room = await matchmakingClient.createRoom({
   properties: {}
 });
 
-// Join by ID
 const joined = await matchmakingClient.joinRoom(roomId);
 ```
 
-Handle response format: `createRoom` / `joinRoom` may return `{ room }` or `{ success, message, room }`. Use `res?.room ?? res`.
+Handle both response shapes:
+- `{ room }`
+- `{ success, message, room }`
 
-### 4. Start Game (Master Client Only)
-
-When 2 players are in the room, the room creator calls:
+### 4) Start game (host only)
 
 ```javascript
 await matchmakingClient.startGame();
 ```
 
-Non-master players receive `onGameStartNotify`.
+Joiner side listens for `onGameStartNotify`.
 
-### 5. Initialize Multiplayer Client for In-Game Sync
-
-After game start, create a MultiplayerClient for message passing:
+### 5) Init MultiplayerClient for sync
 
 ```javascript
 const MClient = (v?.play || v?.Play)?.MultiplayerClient;
@@ -93,69 +99,56 @@ const mp = new MClient(roomId, appId, userSessionId);
 await mp.init({ modules: { general: { enabled: true } } });
 ```
 
-### 6. Send & Receive Custom Messages
+Register listeners before/around init when possible, then bridge both receive channels.
+
+### 6) Send and receive messages
 
 ```javascript
-// Send (prefer FEN for reliability — see patterns/move-sync-reliability.md)
 mp.general.sendMessage(JSON.stringify({ type: "fen", fen: chess.fen() }));
 
-// Receive (handle both string and object — SDK may vary)
 mp.general.onMessage((raw) => {
   const data = typeof raw === "object" ? raw : JSON.parse(raw);
   if (data.type === "fen") chess.load(data.fen);
 });
 ```
 
-## API Summary
+For turn-based games, send full state snapshots (for example FEN), not deltas.
 
-| Matchmaking | Purpose |
-|-------------|---------|
-| `setActor({ session_id, name, properties })` | Required before create/join |
-| `createRoom(config)` | Create room |
-| `joinRoom(roomId)` | Join existing room |
-| `getAvailableRooms()` | List joinable rooms |
-| `leaveRoom()` | Leave current room |
-| `startGame()` | Master only; notifies all |
-| `disconnect()` | Disconnect matchmaking |
+## Room Lifecycle Best Practice
 
-| Events | When |
-|--------|------|
-| `onConnect` | Client ready — call setActor |
-| `onRoomListUpdate` | Room list changed |
-| `onJoinRoom` | Joined room |
-| `onRoomActorChange` | Players in room changed |
-| `onGameStartNotify` | Master started game |
-| `onError` | Error occurred |
+Before create/join in repeated tests:
 
-| MultiplayerClient | Purpose |
-|-------------------|---------|
-| `general.sendMessage(msg)` | Send to all peers |
-| `general.onMessage(cb)` | Receive from peers |
-| `disconnect()` | Disconnect and cleanup |
+1. Disconnect multiplayer client
+2. If host, close room
+3. Leave room
+4. Disconnect matchmaking
+5. Re-init and set actor again
 
-## Gotchas
+This prevents stale-room rebinding and "game already started" failures.
 
-- **onConnect timing**: setActor must run after onConnect. Do not call setActor right after `newMatchmakingClient`.
-- **Response shape**: createRoom/joinRoom may return `{ success, message }` on failure. Check `success === false` before using `room`.
-- **Master client**: The room creator is `is_master_client: true`. Only master can call `startGame` and `closeRoom`.
-- **Cleanup**: Call `multiplayerClient.disconnect()` when leaving the game or unmounting.
-- **Move sync reliability**: Use **FEN (full board state)** instead of move deltas for turn-based games. Add a `requestState` flow so late joiners can catch up. **Critical**: Compute FEN and call `sendMessage` synchronously — never inside a React `setState` updater, or messages may never send. See [patterns/move-sync-reliability.md](patterns/move-sync-reliability.md).
-- **Send context bug**: Do not call detached send refs. Use `mp.general.sendMessage(payload)` directly, otherwise Play SDK may throw `Cannot read properties of undefined (reading 'sdk')`.
-- **Receive channel mismatch**: Listen on both `mp.onMessage` and `mp.general.onMessage` (or bridge both to one handler). Some environments only fire one channel.
-- **Stale room reuse**: Before create/join during repeated tests, best-effort `closeRoom()` + `leaveRoom()`, then disconnect matchmaking/multiplayer to avoid joining an old room and `"game already started"` errors.
-- **Session rebinding**: Using a static `session_id` across repeated tests can rebind to stale rooms. Prefer a fresh client session id per connect cycle.
-- **Leave order matters**: Host should `closeRoom()` before/with `leaveRoom()` after disconnecting multiplayer; otherwise rooms can remain visible but unjoinable.
-- **Creator state drift**: Do not auto-kick creator UI on `onRoomActorChange` when actor count drops below 2; keep room state so a rejoiner can start again.
+## Verification Checklist
 
-## Example Files
+- [ ] Two different users can create/join/start
+- [ ] Both sides receive game-start signal
+- [ ] Host leave closes room for joiners
+- [ ] Joiner leave does not break host's ability to restart
+- [ ] Move/state sync works for first move and late joiner catch-up
+- [ ] No stale room is auto-rejoined after cleanup
 
-| File | Purpose |
-|------|---------|
-| [patterns/matchmaking-flow.md](patterns/matchmaking-flow.md) | Full flow: connect → create/join → start → sync |
-| [patterns/move-sync-reliability.md](patterns/move-sync-reliability.md) | FEN sync, requestState, connection timing |
-| [examples/chess-move-sync.md](examples/chess-move-sync.md) | Turn-based chess move sync pattern |
+## Critical Gotchas
 
-## Reference
+- `setActor` must run after matchmaking connect.
+- Register/start handlers before calling `startGame` to avoid missed events.
+- Use `mp.general.sendMessage(...)` with bound context; avoid detached fn refs.
+- Bridge both `mp.onMessage` and `mp.general.onMessage` in mixed environments.
+- Compute and send sync payload before React async state updates.
+- Use room-properties fallback (`setRoomProperties/getAvailableRooms`) when websocket delivery is inconsistent.
+- Host leave order matters: disconnect multiplayer -> close room -> leave room.
+- Reuse of fixed session id can cause stale room rebinding; use fresh per-connect id.
 
+## References
+
+- [patterns/matchmaking-flow.md](patterns/matchmaking-flow.md)
+- [patterns/move-sync-reliability.md](patterns/move-sync-reliability.md)
+- [examples/chess-move-sync.md](examples/chess-move-sync.md)
 - [VIVERSE Matchmaking SDK Docs](https://docs.viverse.com/developer-tools/matchmaking-and-networking-sdk)
-- [viverse_sdk_docs.md](../../docs/viverse_sdk_docs.md) §8 — Matchmaking & Play SDK

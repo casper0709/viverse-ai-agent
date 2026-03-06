@@ -1,202 +1,92 @@
-# VIVERSE SDK Reference for AI Agents
+# VIVERSE SDK Reference (Operational)
 
-This document provides technical details for integrating the VIVERSE Framework SDK into WebGL/React projects.
+Concise reference for AI agents and developers integrating VIVERSE SDKs in web apps.
 
-## 1. SDK Installation
-Add the following script tag to `index.html`:
+## Read Order
+
+1. `skills/viverse-auth/SKILL.md`
+2. `skills/viverse-multiplayer/SKILL.md`
+3. `skills/viverse-leaderboard/SKILL.md`
+4. `skills/viverse-world-publishing/SKILL.md`
+
+Use this file as a cross-skill quick map, not a replacement for skill workflows.
+
+## Core Setup
+
+### SDK script
+
 ```html
 <script src="https://www.viverse.com/static-assets/viverse-sdk/index.umd.cjs"></script>
 ```
 
-## 2. Core API Initialization
-The SDK is exposed via `window.VIVERSE_SDK`.
+### Namespace compatibility
 
-```javascript
-// Check if SDK is loaded
-if (window.VIVERSE_SDK) {
-    const sdk = window.VIVERSE_SDK;
-    // Initialization logic
-}
-```
+Always check both:
+- `window.viverse`
+- `window.VIVERSE_SDK`
 
-## 3. Authentication (Login SDK)
-Use the Login SDK to authenticate users and access their VIVERSE profile.
+### Vite env variables
 
-- **Login**: `sdk.login()` - Opens a login popup.
-- **Logout**: `sdk.logout()` - Clears the session.
-- **Get User Info**: `sdk.getUserInfo()` - Returns an object containing:
-  - `displayName`: User's profile name.
-  - `avatarUrl`: URL to the user's VIVERSE avatar (GLB).
-  - `userId`: Unique identifier.
+- `VITE_VIVERSE_CLIENT_ID=<app_id>`
+- `VITE_VIVERSE_LEADERBOARD_NAME=<leaderboard_api_name>`
 
-## 4. World Creation and Publishing
-To transform a project into a VIVERSE World:
-1. **Requirements**: A VIVERSE World App ID (created via VIVERSE Studio).
-2. **CLI Usage**:
-   - `npm install -g @viverse/cli`
-   - `viverse-cli auth login`
-   - `viverse publish <build_directory>`
+> `import.meta.env` is build-time. Rebuild after env changes.
 
-## 5. Scripting Requirements
-For projects like PlayCanvas being integrated into VIVERSE:
-- Use `.mjs` files for custom scripts to support ES modules.
-- Use `create-sdk.mjs` injected by the VIVERSE Chrome Extension for deep integration.
+## SDK Surface Map
 
-### Deep Integration Capabilities (create-sdk.mjs)
+- **Auth/Login SDK**
+  - `new vSdk.client({ clientId, domain: "account.htcvive.com" })`
+  - `checkAuth()`, `loginWithWorlds()`, `logout()`
+- **Avatar SDK**
+  - `new vSdk.avatar({ accessToken, appId, clientId, baseURL })`
+  - `getProfile()`
+- **Matchmaking SDK**
+  - `playClient.newMatchmakingClient(appId)`
+  - `setActor`, `createRoom`, `joinRoom`, `leaveRoom`, `startGame`
+- **Play MultiplayerClient**
+  - `new MultiplayerClient(roomId, appId, sessionId)`
+  - `general.sendMessage`, `general.onMessage`
+- **Leaderboard SDK**
+  - `new vSdk.gameDashboard({ token })`
+  - `uploadLeaderboardScore`, `getLeaderboard`
 
-The `create-sdk.mjs` file provides advanced services for immersive experiences:
+## Integration Blueprint (Web/React)
 
-#### 1. Camera Management (CameraService)
-Import `CameraService` and `CameraTypes` to control the viewport:
-- `switchPov(type)`: Switch between POV types (First Person, Third Person, etc.).
-- `switchCamera(cameraEntity)`: Change the active camera.
-- `addLayer(layer)` / `removeLayer(layer)`: Manage camera rendering layers.
+1. Authenticate user (`checkAuth`) and keep auth state in one source.
+2. Fetch profile via Avatar SDK with fallback chain.
+3. Initialize feature clients (matchmaking/leaderboard) after auth.
+4. Build gameplay sync with reconnect-safe room lifecycle.
+5. Publish with App ID/env match and fresh build.
 
-#### 2. Networking and Multiplayer
-- **Networked Plugin**: Synchronizes entity transforms (position/rotation) across clients. Add the "Networking" module in the VIVERSE extension and enable "Transform" synchronization.
-- **Play SDK**: For custom state management:
-    - Use `playClient` for session management.
-    - Use `matchmakingClient` for room connections and player data.
-- **Automatic Sync**: The PlayCanvas VIVERSE SDK automatically handles avatar movement and spatial audio networking.
-
-#### 3. Environment Interaction
-- **Triggers**: Use the SDK to detect interactions with VIVERSE world objects.
-- **Avatar Access**: Real-time access to other users' avatar entities for social features.
-
-## 6. VIVERSE Creator SDK (2025 Updates)
-
-The latest evolution of the framework introduces powerful new APIs for cross-platform interoperability.
-
-### 1. Avatar API (v2)
-- **Cross-Platform**: Avatars work across Unity, Web, and Mobile.
-- **VRM Support**: Full support for standard VRM avatar files.
-- **Outfit Library**: Programmatic access to user outfits and customization.
-
-### 2. Scene API
-- **Unity Interconnectedness**: Allows importing custom scenes from Unity directly into VIVERSE spatial experiences.
-- **Scene Switching**: Programmatic navigation between different scenes in a world.
-
-### 3. Polygon Streaming SDK
-- **High Fidelity**: Embed large-scale, high-quality 3D assets into web experiences without performance bottlenecks.
-- **Dynamic Optimization**: Assets are streamed and LOD-ed (Level of Detail) in real-time based on viewer position.
-
-### 4. VIVERSE Studio & Worlds Creator Program
-- **Engagement Metrics**: Track unique viewers, likes, and session times via the Studio dashboard.
-- **Monetization**: Part of the new Worlds Creator Program for sustainable content creation.
-
-## 7. VIVERSE PlayCanvas Toolkit Specifics
-
-The toolkit extends PlayCanvas with high-level services:
-
-### 1. IWorldNavigationService
-Enables programmatic navigation between different scenes or worlds.
-- `switchWorld(worldId)`: Change the active world.
-- `switchScene(sceneId)`: Change the scene within the current world.
-
-### 2. Event Bridge (No-Code to Code)
-Allows PlayCanvas scripts to interoperate with VIVERSE's no-code logic tools.
-- `on('viverse:event', callback)`: Listen for events triggered via the VIVERSE UI/No-code layer.
-- `emit('viverse:event', data)`: Send events back to the VIVERSE system.
-
-### 3. Multiplayer & Avatars
-- **Automatic Sync**: Position, rotation, and animations of the local avatar are synced automatically.
-- **Spatial Audio**: Powered by the toolkit's networking layer for proximity-based voice chat.
-
----
-
-## 8. Matchmaking & Play SDK (Web / React)
-
-The VIVERSE Matchmaking & Networking SDK enables multiplayer experiences in any web project (not just PlayCanvas). Use when building 2-player games, turn-based sync, or custom state sharing.
-
-**Source**: [VIVERSE Matchmaking SDK Docs](https://docs.viverse.com/developer-tools/matchmaking-and-networking-sdk)
-
-### Prerequisites
-
-- **Auth**: User must be authenticated via Login SDK (`checkAuth`). Use `account_id` as `session_id`.
-- **App ID**: From VIVERSE Studio.
-
-### 8.1 Initialize Play Client
+## Matchmaking & Play Quick Reference
 
 ```javascript
 const v = window.viverse || window.VIVERSE_SDK;
 const PlayClass = v.Play || v.play;
-globalThis.playClient = new PlayClass();
-```
+const playClient = new PlayClass();
+const mc = await playClient.newMatchmakingClient(appId);
 
-### 8.2 Initialize Matchmaking Client
-
-```javascript
-const matchmakingClient = await playClient.newMatchmakingClient(appId);
-```
-
-**Important**: Wait for `onConnect` before calling `setActor`. Subscribe to events:
-
-```javascript
-matchmakingClient.on("onConnect", async () => {
-  await matchmakingClient.setActor({
-    session_id: accountId,  // from auth
-    name: displayName,
-    properties: {}
-  });
+mc.on("onConnect", async () => {
+  await mc.setActor({ session_id: actorSessionId, name: displayName, properties: {} });
 });
 ```
 
-### 8.3 Matchmaking API Summary
+Critical notes:
+- call `setActor` after connect
+- handle response shape differences (`res.room ?? res`)
+- register start/message handlers before or around init/start
 
-| Method | Description |
-|--------|-------------|
-| `setActor({ session_id, name, properties })` | Must be called before create/join. Use auth `account_id` as `session_id`. |
-| `createRoom({ name, mode, maxPlayers, minPlayers, properties })` | Create a room. Returns `{ room }` or `{ success, message }` on failure. |
-| `joinRoom(roomId)` | Join by room ID. Returns `{ room }` on success. |
-| `leaveRoom()` | Leave current room. |
-| `getAvailableRooms()` | Get list of joinable rooms. Returns `{ success, rooms }`. |
-| `startGame()` | Master client only. Notifies all players to begin. |
-| `disconnect()` | Disconnect matchmaking client. |
+## Publish Safety Checklist
 
-### 8.4 Matchmaking Events
+- [ ] App ID in `.env` matches target app
+- [ ] fresh `npm run build` after env changes
+- [ ] publish to intended app id
+- [ ] verify auth/profile in preview after publish
 
-| Event | When | Payload |
-|-------|------|---------|
-| `onConnect` | Client connected to SDK | — |
-| `onRoomListUpdate` | Room list changed | `rooms[]` |
-| `onJoinRoom` | Joined a room | `room` |
-| `onRoomActorChange` | Actors in room changed | `actors[]` |
-| `onGameStartNotify` | Master started game | — |
-| `onError` | Error occurred | `error` |
+## Canonical References
 
-### 8.5 Multiplayer Client (In-Game Sync)
-
-After joining a room and starting the game, create a `MultiplayerClient` for real-time sync:
-
-```javascript
-const MClient = (window.viverse?.play || window.play)?.MultiplayerClient;
-const multiplayerClient = new MClient(roomId, appId, userSessionId);
-await multiplayerClient.init({ modules: { general: { enabled: true } } });
-```
-
-### 8.6 General Module (Custom Game State)
-
-Use `general.sendMessage` / `general.onMessage` for turn-based or custom sync (e.g. chess moves):
-
-```javascript
-// Send
-multiplayerClient.general.sendMessage(JSON.stringify({ type: "move", from: "e2", to: "e4" }));
-
-// Receive
-multiplayerClient.general.onMessage((raw) => {
-  const data = JSON.parse(raw);
-  if (data.type === "move") applyMove(data.from, data.to);
-});
-```
-
-### 8.7 Other Modules
-
-- **NetworkSync**: `updateMyPosition`, `onNotifyPositionUpdate` — for 3D position sync.
-- **ActionSync**: `competition`, `onCompetition` — for action arbitration.
-- **Leaderboard**: `leaderboardUpdate`, `onLeaderboardUpdate` — real-time scores.
-
-### Gotchas
-
-- SDK may expose `v.Play` or `v.play` (capitalization varies).
-- `setActor` must run **after** `onConnect`. Do not call it immediately after `newMatchmakingClient`.
-- `createRoom` / `joinRoom` may return `{ success, message, room }` — check `room` or `success`.
+- [Auth skill](../skills/viverse-auth/SKILL.md)
+- [Multiplayer skill](../skills/viverse-multiplayer/SKILL.md)
+- [Leaderboard skill](../skills/viverse-leaderboard/SKILL.md)
+- [World publishing skill](../skills/viverse-world-publishing/SKILL.md)
+- [Matchmaking docs](https://docs.viverse.com/developer-tools/matchmaking-and-networking-sdk)

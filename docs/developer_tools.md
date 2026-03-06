@@ -1,103 +1,74 @@
-# VIVERSE Developer Tools Documentation
+# VIVERSE Developer Tools (Quick Operator Guide)
 
-Official documentation for VIVERSE Developer Tools, including SDKs and services for 3D project development.
+Practical map of SDK/tool choices and when to use each.
 
-## 1. Overview of Tools
+## Tool Selection
 
-### Login & Authentication SDK [Beta]
-Access user account information (display name, avatar, account ID) when they join a VIVERSE experience.
-- **Access**: Access display name, avatar information, and account information.
-- **SSO**: Enables seamless travel between VIVERSE experiences.
+- **Auth/Login SDK**: user login, token, account id, profile bootstrap
+- **Avatar SDK**: display name and avatar asset/profile details
+- **Matchmaking + Play SDK**: room lifecycle and multiplayer sync
+- **Leaderboard SDK**: score upload and ranking retrieval
+- **VIVERSE CLI**: app create/list/publish and auth status
 
-### Avatar SDK [Beta]
-Download and use a user's avatar file in your VIVERSE experience.
-- **Identity**: Integration of end-user avatars for a personalized experience.
+## Read Order for Integration
 
-### Leaderboard SDK [Beta]
-Track high scores and player interaction to boost engagement.
+1. `skills/viverse-auth/SKILL.md`
+2. `skills/viverse-multiplayer/SKILL.md`
+3. `skills/viverse-leaderboard/SKILL.md`
+4. `skills/viverse-world-publishing/SKILL.md`
 
-### Matchmaking & Networking SDK [Beta]
-Sync game-state between clients for multiplayer experiences.
+## Core API Signatures
 
-- **Play Client**: `new viverse.Play()` or `new viverse.play()` — initialize before matchmaking.
-- **Matchmaking Client**: `await playClient.newMatchmakingClient(appId)` — rooms, create, join, startGame.
-- **Multiplayer Client**: `new play.MultiplayerClient(roomId, appId, userSessionId)` — in-game sync. Use `general.sendMessage` / `general.onMessage` for custom state (e.g. turn-based games).
-- **Docs**: [Matchmaking & Networking SDK](https://docs.viverse.com/developer-tools/matchmaking-and-networking-sdk)
-
-**Turn-based sync best practices** (from Chess Battle 2D):
-- Prefer **FEN (full board state)** over move deltas — more robust to lost/reordered messages.
-- Add a **requestState** flow: clients request state on mount; master responds with current FEN so late joiners catch up.
-- Ensure both creator and joiner `await connectMultiplayer()` before entering the game.
-- **Critical**: Compute state and FEN synchronously, then call `sendMessage` — never inside a React `setState` updater, or messages may never send.
-- See `viverse_ai_agent/skills/viverse-multiplayer/patterns/move-sync-reliability.md` for details.
-
-## 2. Login & Authentication API Reference
-
-### Initialization
-```javascript
-new viverse.client(options)
-```
-**Options:**
-- `clientId` (string, Required): Your App ID obtained from VIVERSE Studio.
-- `domain` (string, Required): Authentication domain, set to `account.htcvive.com`.
-- `cookieDomain` (string, Optional): Domain for the authentication cookie.
-
-### Methods
-
-#### `checkAuth()`
-Checks if the user is currently authenticated.
-- **Returns**: `Promise<object | undefined>`
-- **Response Object**:
-  - `access_token` (string): Token for API requests.
-  - `account_id` (string): Unique user ID.
-  - `expires_in` (number): Token lifetime in seconds.
-  - `state` (string): Custom state value.
-
-#### `loginWithWorlds(options)`
-Redirects to the VIVERSE Worlds login page (Single Sign-On).
-- **Options**: `state` (string, Optional) for custom value return.
-
-## 3. Example Implementation (PlayCanvas)
+### Auth
 
 ```javascript
-window.addEventListener('load', async () => {
-  // Initialize client
-  globalThis.viverseClient = new globalThis.viverse.client({
-    clientId: '{yourAppID}',
-    domain: 'account.htcvive.com'
-  });
-
-  // Check login status
-  const result = await globalThis.viverseClient.checkAuth();
-  if (result === undefined) {
-    // Trigger login refresh
-    globalThis.viverseClient.loginWithWorlds();
-  } else {
-    // authenticated, use result.access_token
-  }
-});
+const client = new vSdk.client({ clientId: appId, domain: "account.htcvive.com" });
+const auth = await client.checkAuth(); // access_token, account_id, expires_in
+client.loginWithWorlds({ state: "optional" });
+await client.logout();
 ```
 
-## 5. VIVERSE PlayCanvas Toolkit
+### Avatar
 
-The **VIVERSE PlayCanvas Toolkit** is a specialized extension for the PlayCanvas engine that enables direct publishing and deep integration with the VIVERSE platform.
+```javascript
+const avatarClient = new vSdk.avatar({ baseURL, accessToken, appId, clientId: appId });
+const profile = await avatarClient.getProfile();
+```
 
-### Key Components
-- **PlayCanvas Extension (Chrome)**: Injects VIVERSE SDK APIs and adds a "VIVERSE" tab to the PlayCanvas Editor.
-- **VIVERSE SDK APIs**: Automatically injected APIs for cameras, networking, and player logic.
-- **IWorldNavigationService**: Programmatic scene switching and navigation.
+### Matchmaking/Play
 
-### Core APIs
-- `EntitySubscribeTriggerEnter`: Listen for interaction events.
-- `TeleportAvatar`: Move the user's avatar.
-- `NotificationCenterPublish`: Send system-wide notifications.
-- `EntityPlayAnimation`: Trigger animations on entities.
+```javascript
+const playClient = new (vSdk.Play || vSdk.play)();
+const mc = await playClient.newMatchmakingClient(appId);
+const mp = new (vSdk.play || vSdk.Play).MultiplayerClient(roomId, appId, sessionId);
+```
 
-### Publishing Flow
-1. Install the PlayCanvas Extension from the Chrome Web Store.
-2. Link your VIVERSE Studio App ID in the PlayCanvas project settings.
-3. Use the "Publish to VIVERSE" button within the extension tab.
+### Leaderboard
 
-## 6. VIVERSE CLI Usage
-- **Latest Version**: [v1.3.3](https://www.viverse.com/static-assets/viverse-sdk/1.3.3/index.umd.cjs)
-- **General URL**: `https://www.viverse.com/static-assets/viverse-sdk/index.umd.cjs`
+```javascript
+const dashboard = new vSdk.gameDashboard({ token: accessToken });
+await dashboard.uploadLeaderboardScore(appId, [{ name, value }]);
+await dashboard.getLeaderboard(appId, query);
+```
+
+## High-Impact Best Practices
+
+- Keep auth state in one top-level source (App/provider), pass down via props/context.
+- Never rely on `checkAuth()` for profile name/avatar; always fetch profile.
+- Match App ID across env, runtime config, and publish target.
+- For turn-based multiplayer, send full state snapshots + catch-up flow.
+- Rebuild after env/App ID changes before publishing.
+
+## CLI Essentials
+
+```bash
+viverse-cli auth status
+viverse-cli app list
+viverse-cli app publish ./dist --app-id <APP_ID>
+```
+
+## References
+
+- [VIVERSE Matchmaking docs](https://docs.viverse.com/developer-tools/matchmaking-and-networking-sdk)
+- [SDK reference](./viverse_sdk_docs.md)
+- [Skills guide](./skills-guide.md)

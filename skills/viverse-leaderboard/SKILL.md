@@ -5,161 +5,106 @@ prerequisites: [VIVERSE Auth integration (checkAuth), ViverseService, Viverse St
 tags: [viverse, leaderboard, tracking, gamedashboard, api]
 ---
 
-# VIVERSE Leaderboard (Official Game Dashboard SDK)
+# VIVERSE Leaderboard Integration
 
-The VIVERSE SDK provides a native backend **Leaderboard SDK** via the `gameDashboard` client. This allows for persistent, cross-device global rankings without needing to build your own custom database backend. **Do not use `localStorage` for leaderboards, as it is strictly limited to the local browser.**
+Use `viverse.gameDashboard` to upload and fetch persistent global rankings.
 
-## When To Use
+## When To Use This Skill
 
-- Global rankings (high scores, longest distance, landmarks visited)
-- Showing player rank relative to the rest of the world
-- Tracking engagement over different time periods (all-time, weekly, daily)
+- Global scoreboards (wins, time, distance, points)
+- Top-N ranking views
+- Around-user rank queries
 
-## Prerequisites & Setup (VIVERSE Studio)
+## Read Order
 
-Before writing code, the leaderboard must be configured in the **VIVERSE Studio / Developer Console**:
-1. You must have a registered App ID.
-2. In the VIVERSE Studio, create a new Leaderboard configuration.
-3. Note the **Leaderboard Name** (API Name), **Data Type** (e.g., Integer, Milliseconds), **Sort Type** (Ascending/Descending), and **Update Type** (Append/Update/Best).
+1. This file (workflow + constraints)
+2. Project leaderboard service implementation
+3. Studio leaderboard configuration
 
-## Architecture
+## Studio Preflight
 
-```
-ViverseLayer.jsx  →  Authenticates user, gets access_token
-PlayCanvasScene.jsx  →  Initializes gameDashboardClient with the token
-PlayCanvasScene.jsx  →  Calls uploadLeaderboardScore() when events happen
-LeaderboardPanel.jsx  →  Calls getLeaderboard() to fetch rankings and renders UI
-```
+Before coding:
 
-## 1. Initializing the Game Dashboard Client
+1. Registered App ID exists.
+2. Leaderboard is created in Studio for that app.
+3. You know:
+   - Leaderboard API name
+   - Data type
+   - Sort direction
+   - Update rule (append/update/best)
 
-After successful user authentication (using `viverseClient.checkAuth()`), you must use the `access_token` to initialize the `gameDashboardClient`.
+## Runtime Preflight
 
-```javascript
-// Example initialization after VIVERSE Auth
-let __viverseToken = null;
-let gameDashboardClient = null;
+- [ ] Auth success (`access_token` present)
+- [ ] `VITE_VIVERSE_CLIENT_ID` matches target app
+- [ ] `VITE_VIVERSE_LEADERBOARD_NAME` matches Studio API name
+- [ ] Initialize client once per token
+- [ ] Handle API errors in UI (not just console)
 
-const initLeaderboard = async () => {
-    // 1. Get the auth token from your viverse client instance
-    const authResult = await window.viverseClient.checkAuth();
-    if (authResult?.access_token) {
-        __viverseToken = authResult.access_token;
-        
-        // 2. Initialize the Game Dashboard Client
-        // Ensure you import/load the VIVERSE SDK script first
-        gameDashboardClient = new window.viverse.gameDashboard({
-            token: __viverseToken,
-            // baseURL and communityBaseURL may be required depending on the SDK version, check official docs if initializing fails
-        });
-        
-        console.log("VIVERSE Leaderboard SDK Initialized!");
-    } else {
-        console.warn("User not authenticated, Leaderboard SDK cannot be initialized.");
-    }
-};
-```
+## Implementation Workflow
 
-## 2. Uploading a Score (`uploadLeaderboardScore`)
-
-To submit a score, use the `uploadLeaderboardScore` method. You need your Studio App ID and an array of score objects. The `name` must match the Leaderboard Name defined in VIVERSE Studio.
+### 1) Initialize Dashboard Client
 
 ```javascript
-const submitDistanceScore = async (appId, distanceInMeters) => {
-    if (!gameDashboardClient) return;
-    
-    try {
-        const response = await gameDashboardClient.uploadLeaderboardScore(appId, [
-            {
-                name: "TotalDistanceWalked", // Match the API Name in VIVERSE Studio exactly
-                value: Math.floor(distanceInMeters)
-            }
-        ]);
-        console.log("Score uploaded successfully:", response);
-    } catch (error) {
-        console.error("Failed to upload score:", error);
-    }
-};
+const v = window.viverse || window.VIVERSE_SDK;
+const DashboardClass = v?.gameDashboard || v?.GameDashboard;
+const gameDashboardClient = new DashboardClass({ token: accessToken });
 ```
 
-### Tracking Triggers Example (PlayCanvas)
+### 2) Upload score
 
-Accumulate velocity in the game loop and flush periodically:
+The `name` must exactly match Studio API name.
 
 ```javascript
-// Inside PlayCanvas animLoop
-const vel = avatar.rigidbody?.linearVelocity;
-if (vel) {
-    const spd = Math.sqrt(vel.x * vel.x + vel.z * vel.z);
-    ma._distAccum = (ma._distAccum || 0) + (spd * dt);
-    
-    // Upload score every 10 meters to avoid API spam
-    if (ma._distAccum >= 10) {
-        // App ID from Viverse Studio
-        submitDistanceScore('YOUR_VIVERSE_APP_ID', ma._distAccum); 
-        ma._distAccum = 0; // Reset accumulator
-    }
-}
+await gameDashboardClient.uploadLeaderboardScore(appId, [
+  { name: leaderboardName, value: scoreValue },
+]);
 ```
 
-## 3. Retrieving the Leaderboard (`getLeaderboard`)
-
-Use `getLeaderboard` to fetch the rankings and display them in your UI. This required a configuration object to specify pagination, geography, and time filters.
+### 3) Fetch leaderboard
 
 ```javascript
-const fetchTopRankings = async (appId) => {
-    if (!gameDashboardClient) return [];
-    
-    try {
-        const leaderboardConfig = {
-            name: "TotalDistanceWalked", // Match the API Name in VIVERSE Studio exactly
-            range_start: 1,              // Top of the list
-            range_end: 10,               // Fetch top 10 players
-            region: "global",            // 'global' or 'local'
-            time_range: "alltime",       // 'alltime', 'daily', 'weekly'
-            around_user: false           // true to fetch ranks specifically around current user
-        };
-        
-        const response = await gameDashboardClient.getLeaderboard(appId, leaderboardConfig);
-        
-        // The response format typically includes an array of rankings
-        console.log("Leaderboard Data:", response);
-        return response.rankings || []; 
-    } catch (error) {
-        console.error("Failed to fetch leaderboard:", error);
-        return [];
-    }
-};
-
-// Example output ranking object:
-// {
-//    user_id: "...",
-//    name: "PlayerName",
-//    value: 1250,
-//    rank: 1
-// }
+const res = await gameDashboardClient.getLeaderboard(appId, {
+  name: leaderboardName,
+  range_start: 1,
+  range_end: 10,
+  region: "global",
+  time_range: "alltime",
+  around_user: false,
+});
+const rankings = res?.rankings || [];
 ```
 
-## App Scope & Naming
+## Scoring Best Practices
 
-Leaderboard lookups are scoped by **App ID + Leaderboard Name**.
+- Upload at game checkpoints/end state, not every frame.
+- Normalize score values before upload (integer/clamped) to match Studio type.
+- Keep scoring logic deterministic and documented.
 
-- You can reuse the same leaderboard API name (e.g. `ChessBattle2D`) across multiple apps.
-- Each app must still have that leaderboard configured in Studio.
-- If app A has the name configured and app B does not, app B calls will fail even though the name works in app A.
+## App Scope and Naming
 
-Practical setup for multi-app projects (test/prod):
-- Keep one env name (e.g. `VITE_VIVERSE_LEADERBOARD_NAME=ChessBattle2D`)
-- Configure the same API name in each app’s Studio settings
-- Ensure the runtime app id (`VITE_VIVERSE_CLIENT_ID`) points to the intended app
+Leaderboard lookup key is: **App ID + Leaderboard Name**.
 
-## Gotchas
+For test/prod:
+- Keep one env variable name (for example `VITE_VIVERSE_LEADERBOARD_NAME`)
+- Configure same leaderboard API name in each app
+- Ensure runtime App ID points to intended app
 
-> [!WARNING]
-> The Leaderboard APIs (`uploadLeaderboardScore`, `getLeaderboard`) strictly require user authentication to work. The `viverse.gameDashboard` constructor will fail or return unauthorized errors if an invalid or missing `access_token` is provided.
+## Verification Checklist
 
-> [!IMPORTANT]
-> Do not spam `uploadLeaderboardScore` every frame. Aggregate the player's metrics locally (in game state) and only upload the score at logical checkpoints (e.g., every 10 meters walked, level completed, daily login).
+- [ ] Authenticated user can upload score successfully
+- [ ] Top ranking fetch returns rows in expected order
+- [ ] UI handles empty/error states
+- [ ] Test/prod apps both have leaderboard configured in Studio
 
-> [!NOTE]
-> If you need to retrieve scores for unauthenticated users, VIVERSE provides a `getGuestLeaderboard()` variant. However, uploading scores requires a logged-in account.
+## Critical Gotchas
+
+- APIs require valid auth token; guest users cannot upload.
+- Do not spam uploads in render/game loops.
+- A leaderboard name valid in app A fails in app B if not configured there.
+- Build-time env drift can target wrong App ID; rebuild before publish after env changes.
+
+## References
+
+- [viverse-auth](../viverse-auth/SKILL.md)
+- [VIVERSE SDK docs](../../docs/viverse_sdk_docs.md)

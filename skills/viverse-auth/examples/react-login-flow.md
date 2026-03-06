@@ -75,10 +75,19 @@ class ViverseService {
                 try { profile = await this.client.getUser(); } catch (e) {}
             }
 
+            const looksLikeUuid = (value) =>
+                typeof value === 'string' &&
+                /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.trim());
+            const rawName = profile?.name || profile?.displayName || profile?.display_name || profile?.userName || '';
+            const safeName = rawName && !looksLikeUuid(rawName)
+                ? rawName
+                : `VIVERSE Player ${String(result.account_id || '').slice(0, 6)}`;
+
             this.userData = {
-                displayName: profile?.name || profile?.displayName || result.account_id || 'VIVERSE User',
+                displayName: safeName,
                 avatarUrl: profile?.activeAvatar?.avatarUrl || profile?.avatarUrl || null,
                 headIconUrl: profile?.activeAvatar?.headIconUrl || profile?.headIconUrl || null,
+                email: profile?.email || null,
                 userId: result.account_id,
                 accessToken
             };
@@ -91,10 +100,12 @@ class ViverseService {
         this.client.loginWithWorlds();
     }
 
-    async logout() {
+    async logout({ reload = false } = {}) {
         if (this.client?.logout) await this.client.logout();
         this.userData = null;
-        window.location.reload();
+        this.client = null;
+        this.isInitialized = false;
+        if (reload) window.location.reload();
     }
 
     getUserData() { return this.userData; }
@@ -135,9 +146,11 @@ export default function ViverseLayer({ onUserChange }) {
     };
 
     const handleLogout = async () => {
-        await viverseService.logout();
-        setUser(null);
-        onUserChange?.(null);
+        await viverseService.logout({ reload: false });
+        const ok = await viverseService.init();
+        const userData = ok ? await viverseService.checkAuth() : null;
+        setUser(userData || null);
+        onUserChange?.(userData || null);
     };
 
     if (loading) return null;
@@ -158,6 +171,7 @@ export default function ViverseLayer({ onUserChange }) {
                 <img src={user.avatarUrl || AVATAR_PLACEHOLDER} alt="Avatar" />
                 <div>
                     <span>{user.displayName}</span>
+                    {user.email && <small>{user.email}</small>}
                     <button onClick={handleLogout}>Logout</button>
                 </div>
             </div>

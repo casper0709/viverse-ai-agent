@@ -85,11 +85,31 @@ export async function fetchViverseProfile(vSdk, client, accessToken, accountId) 
         } catch (e) {}
     }
 
+    const looksLikeUuid = (value) =>
+        typeof value === 'string' &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.trim());
+
+    const preferredName =
+        profile?.name ||
+        profile?.displayName ||
+        profile?.display_name ||
+        profile?.nickName ||
+        profile?.nickname ||
+        profile?.userName ||
+        '';
+
+    const safeDisplayName = preferredName && !looksLikeUuid(preferredName)
+        ? preferredName
+        : accountId
+            ? `VIVERSE Player ${String(accountId).slice(0, 6)}`
+            : 'VIVERSE Player';
+
     // Normalize the result
     return {
-        displayName: profile?.name || profile?.displayName || profile?.display_name || profile?.userName || accountId || 'VIVERSE User',
+        displayName: safeDisplayName,
         avatarUrl: profile?.activeAvatar?.avatarUrl || profile?.avatarUrl || profile?.avatar_url || profile?.profilePicUrl || null,
         headIconUrl: profile?.activeAvatar?.headIconUrl || profile?.headIconUrl || profile?.head_icon_url || profile?.headIcon || null,
+        email: profile?.email || null,
     };
 }
 ```

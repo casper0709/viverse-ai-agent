@@ -1,110 +1,69 @@
-# Using the VIVERSE AI Agent & Skills for a New Webapp
+# Skills Guide (Best-Practice Usage)
 
-## Three Ways to Use the System
+How to use skills without missing critical guidance or wasting tokens.
 
-Your setup supports three approaches, from lightest to heaviest:
+## Recommended Mode
 
----
+For most coding tasks, use **skills directly** (no server required):
 
-### Approach 1: Skills Only (No Agent Server Needed) ⭐ Recommended for New Projects
-
-Skills are **standalone markdown documents** — any AI assistant can consume them directly.
-
-**How:** Point your AI assistant at the relevant `SKILL.md` file:
-
-```
-Read skills/viverse-auth/SKILL.md and add VIVERSE login to my React app.
+```text
+Read skills/viverse-auth/SKILL.md and integrate auth into my React app.
 ```
 
-**What you get:**
-- Step-by-step integration guides with code patterns
-- Gotchas and edge cases documented from real experience
-- Example files (e.g., `examples/react-login-flow.md`)
+## Three Operating Modes
 
-**Available skills:**
+1. **Skills only (default)**
+   - fastest setup
+   - lowest token use
+2. **Local agent server**
+   - use when you want API/chat orchestration
+3. **Delegated API tasks**
+   - use from scripts or other agent systems
 
-| Skill | What it does |
-|-------|-------------|
-| `viverse-auth` | Login/SSO via VIVERSE accounts |
-| `viverse-avatar-sdk` | Load user avatars (GLB/VRM) into 3D scenes |
-| `playcanvas-avatar-navigation` | Physics-based avatar movement (Ammo.js) |
-| `viverse-world-publishing` | Publish to VIVERSE Worlds |
+## Skill Selection Matrix
 
-> **Tip:** This is the fastest path. You don't need to install or run anything — just reference the skill files from your AI coding assistant.
+- `viverse-auth`: login, profile, SSO handling
+- `viverse-multiplayer`: rooms, game start, state sync
+- `viverse-leaderboard`: upload/fetch rankings
+- `viverse-avatar-sdk`: 3D avatar loading
+- `viverse-world-publishing`: CLI release workflow
 
----
+## Prompt Template (Low Miss Risk)
 
-### Approach 2: Run the Agent Server (Chat UI + API)
+Use this exact structure:
 
-Use this when you want the dedicated **VIVERSE Discovery** chat interface, which auto-loads all skills and docs.
+```text
+Read:
+- skills/viverse-auth/SKILL.md
+- skills/viverse-multiplayer/SKILL.md
 
-**Setup:**
-```bash
-cd ~/Projects/AI/viverse_ai_agent
-cp .env.example .env        # Add your GOOGLE_API_KEY
-npm install
-npm run dev                  # Runs on http://localhost:3000
+Task:
+Integrate online chess room flow in /path/to/project.
+
+Constraints:
+- keep existing UI
+- no raw account_id in display
+
+Verification:
+- run build
+- summarize blockers
 ```
 
-**What you get:**
-- Web chat UI at `http://localhost:3000`
-- All skills and docs pre-loaded into the Gemini system prompt
-- Agent tools: `readFile`, `writeFile`, `runCommand`, `listFiles`, `loadSkill`, `searchRooms`
-- The agent can read/write files in your project and run shell commands
+## Token-Efficient Workflow
 
-**Chat with it:**
-```
-Add VIVERSE login to my new webapp at ~/Projects/AI/my-new-app
-```
+1. Read only `SKILL.md` first.
+2. Read linked `patterns/*.md` only for active sub-problem.
+3. Read `examples/*.md` only if implementation is unclear.
+4. Avoid loading unrelated skills in the same request.
 
-The agent will use `loadSkill('viverse-auth', 'SKILL.md')` automatically, read your project files, and write the integration code.
+## Completion Checklist
 
-> See [usage.md](./usage.md) for full server setup and deployment details.
+- [ ] Correct skill(s) were loaded first
+- [ ] Preflight checklist from skill was executed
+- [ ] Build/test was run after edits
+- [ ] App ID/env/publish target are aligned
 
----
+## Related Docs
 
-### Approach 3: Delegate from Another AI
-
-Send tasks to the running agent via API from any other tool or script:
-
-```bash
-curl -X POST http://localhost:3000/api/ai/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Add a VIVERSE login button to my-new-app/src/App.jsx"}'
-```
-
----
-
-## Recommended Workflow for a New Webapp Experiment
-
-### Step-by-step
-
-1. **Scaffold your webapp** (Vite, Next.js, plain HTML — whatever you prefer)
-
-2. **Add the VIVERSE SDK** to your `index.html`:
-   ```html
-   <script src="https://www.viverse.com/static-assets/viverse-sdk/index.umd.cjs"></script>
-   ```
-
-3. **Pick the skills you need** and ask your AI assistant to read them:
-   ```
-   Read skills/viverse-auth/SKILL.md and skills/viverse-avatar-sdk/SKILL.md,
-   then integrate VIVERSE login and avatar loading into my new Vite project.
-   ```
-
-4. **For deeper patterns**, reference the `patterns/` and `examples/` subdirectories:
-   ```
-   Also read skills/viverse-auth/examples/react-login-flow.md for a complete example.
-   ```
-
----
-
-## When to Start the Agent Server
-
-| Scenario | Need Agent Server? |
-|----------|-------------------|
-| Adding VIVERSE features to a new app | ❌ Just use skills directly |
-| Want the agent to autonomously read/write your project files | ✅ Start server |
-| Using the web chat UI to explore VIVERSE worlds | ✅ Start server |
-| Delegating tasks from scripts or other AI tools | ✅ Start server |
-| Reading skill docs for reference | ❌ No server needed |
+- [usage.md](./usage.md)
+- [viverse_sdk_docs.md](./viverse_sdk_docs.md)
