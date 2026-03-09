@@ -54,6 +54,17 @@ If runtime error contains `Unexpected token '<'` during leaderboard API calls, r
 - Authenticated (non-guest) session
 - Studio leaderboard exists under that same app
 
+## MUST REMIND USER (Non-optional)
+
+For every leaderboard integration task, AI MUST explicitly remind user to complete Studio setup before testing:
+
+1. Create leaderboard in Studio under target app ID.
+2. API name must exactly match `VITE_VIVERSE_LEADERBOARD_NAME` (case-sensitive).
+3. Confirm type/sort/update rule match game scoring model.
+4. Rebuild and republish after any App ID or leaderboard-name env change.
+
+Do not assume Studio setup exists even if code is correct.
+
 ## Runtime Preflight
 
 - [ ] Auth success (`access_token` present)
@@ -115,6 +126,24 @@ Also support response-shape fallback (`rankings`, `leaderboard_rankings`, nested
 - Normalize score values before upload (integer/clamped) to match Studio type.
 - Keep scoring logic deterministic and documented.
 - Prefer gameplay-derived scores (for example kills) over label-derived scores when debugging ranking correctness.
+- Make leaderboard submit idempotent per match result (see below) to avoid duplicate score inflation.
+
+## Idempotent Submit Rule (Required)
+
+Leaderboard submit APIs are side-effectful (especially with `Append` update rule).  
+Your game MUST prevent duplicate submissions for the same finished match.
+
+Required pattern:
+
+1. Build a stable `resultKey` per match-end event (for example: `matchId + endedAt + winner`).
+2. Keep `submittedResultKeyRef` (or equivalent state/ref).
+3. Before submit:
+   - if same key already submitted, skip upload/fetch.
+4. Reset this key only when a new match starts (or user returns to lobby/restart).
+
+Why:
+- `onGameEnd` can fire more than once from re-renders, network replays, or lifecycle transitions.
+- Without idempotency, scores can keep increasing unintentionally.
 
 ## Debugging Playbook (Production-safe)
 
@@ -134,6 +163,10 @@ Interpretation:
 - `upload success` + `rows=0` => write path works; investigate fetch params/shape/propagation timing
 - `Unexpected token '<'` => backend returned HTML; usually app/name/token mismatch
 - browser-extension stack traces (`chrome-extension://...`) are unrelated noise unless they reference app bundle paths
+- `rows=0` with `lastUpload.value=0` often means only zero-score results were uploaded; verify with a positive score upload.
+- If authenticated `getLeaderboard` remains empty, try `getGuestLeaderboard` as a read fallback for display.
+- `HTTP error ... /api/vrleaderboard/v1/apps/<appId>` with `404` means leaderboard backend cannot find that app id; verify leaderboard was created in Studio under the same app and try `VITE_VIVERSE_APP_ID` / `VITE_VIVERSE_CLIENT_ID` candidate fallback.
+- Error stacks that reference an old bundle hash (for example previous `index-*.js`) indicate stale cached build; verify latest published hash/build tag before debugging logic.
 
 ## App Scope and Naming
 
@@ -152,6 +185,8 @@ For test/prod:
 - [ ] Test/prod apps both have leaderboard configured in Studio
 - [ ] Console shows uploaded value equals expected gameplay score
 - [ ] If upload succeeds but list is empty, fallback fetch configs are attempted and logged
+- [ ] Repeated end-of-match callback does not cause duplicate leaderboard uploads
+- [ ] Console confirms current build tag or latest bundle hash (not stale cached build)
 
 ## Critical Gotchas
 
@@ -161,6 +196,7 @@ For test/prod:
 - Build-time env drift can target wrong App ID; rebuild before publish after env changes.
 - `Upload leaderboard record successfully` does not guarantee immediate non-empty ranking rows.
 - `THREE.WebGLRenderer: Context Lost` is graphics lifecycle related, not leaderboard API failure.
+- Duplicate end callbacks can repeatedly submit scores unless guarded by a per-match idempotency key.
 
 ## References
 

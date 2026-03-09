@@ -71,6 +71,7 @@ viverse-cli app publish ./dist --auto-create-app --name "<APP_NAME>"
 
 - [ ] CLI publish returns success URL
 - [ ] Preview URL opens and assets load
+- [ ] Runtime console confirms latest bundle hash/build tag (avoid stale cached build confusion)
 - [ ] Auth flow works in the published target app
 - [ ] Studio review/submission step completed if required
 
@@ -80,6 +81,7 @@ viverse-cli app publish ./dist --auto-create-app --name "<APP_NAME>"
 - Publishing to app A with build configured for app B can break auth and leaderboard.
 - Asset paths must be deployment-safe (relative/public).
 - Review state in Studio may block full live rollout after upload.
+- After publish, browser/app cache can still run old bundle hash; hard refresh or add temporary build-tag log for verification during hotfix debugging.
 
 ## References
 
