@@ -87,6 +87,94 @@ class FileService {
             };
         }
     }
+
+    async runBackgroundCommand(command, cwd) {
+        const { spawn } = await import('child_process');
+        const workingDir = cwd ? this.resolvePath(cwd) : this.baseDir;
+        
+        // Generate a simple Job ID based on timestamp
+        const jobId = `job_${Date.now()}`;
+        const logFilePath = path.join(workingDir, `${jobId}.log`);
+        
+        logger.info(`Starting background command [${jobId}]: ${command} in ${workingDir}`);
+
+        try {
+            // Split command and arguments safely (very basic split for demo)
+            const parts = command.match(/(?:[^\s"]+|"[^"]*")+/g).map(p => p.replace(/(^"|"$)/g, ''));
+            const cmd = parts[0];
+            const args = parts.slice(1);
+
+            const child = spawn(cmd, args, { cwd: workingDir, shell: true });
+
+            // Store process info in memory (in a production app, use Redis or similar)
+            if (!this.activeJobs) this.activeJobs = new Map();
+            this.activeJobs.set(jobId, { status: "running", exitCode: null, logFile: logFilePath });
+
+            // Write output to log file
+            const fsModule = await import('fs');
+            const logStream = fsModule.createWriteStream(logFilePath, { flags: 'a' });
+
+            child.stdout.pipe(logStream);
+            child.stderr.pipe(logStream);
+
+            child.on('close', (code) => {
+                logger.info(`Background command [${jobId}] exited with code ${code}`);
+                const job = this.activeJobs.get(jobId);
+                if (job) {
+                    job.status = code === 0 ? "completed" : "failed";
+                    job.exitCode = code;
+                }
+                logStream.end();
+            });
+
+            return { 
+                jobId: jobId, 
+                status: "Started in background", 
+                logFile: `${jobId}.log`,
+                message: "Use checkCommandStatus with this jobId to see progress."
+            };
+        } catch (error) {
+            logger.error(`FileService.runBackgroundCommand Error: ${error.message}`);
+            throw error;
+        }
+    }
+
+    async checkCommandStatus(jobId, cwd) {
+        if (!this.activeJobs || !this.activeJobs.has(jobId)) {
+            return { error: `Job ID ${jobId} not found.` };
+        }
+
+        const job = this.activeJobs.get(jobId);
+        const workingDir = cwd ? this.resolvePath(cwd) : this.baseDir;
+        const logPath = path.isAbsolute(job.logFile) ? job.logFile : path.join(workingDir, job.logFile);
+
+        try {
+            // Read the last 2000 characters of the log to prevent token overflow
+            const fsModule = await import('fs/promises');
+            const stats = await fsModule.stat(logPath);
+            const size = stats.size;
+            
+            let logContent = "";
+            if (size > 0) {
+                const readSize = Math.min(size, 2000);
+                const buffer = Buffer.alloc(readSize);
+                const fileHandle = await fsModule.open(logPath, 'r');
+                await fileHandle.read(buffer, 0, readSize, size - readSize);
+                await fileHandle.close();
+                logContent = buffer.toString('utf8');
+            }
+
+            return {
+                jobId: jobId,
+                status: job.status,
+                exitCode: job.exitCode,
+                recentLog: logContent || "No output yet."
+            };
+        } catch (error) {
+            logger.error(`Error checking job status: ${error.message}`);
+            return { status: job.status, error: "Could not read log file." };
+        }
+    }
 }
 
 export default new FileService();

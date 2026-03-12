@@ -119,6 +119,17 @@ mp.general.onMessage((raw) => {
 
 For turn-based games, send full state snapshots (for example FEN), not deltas.
 
+### Protocol evolution checklist (required)
+
+When adding a new gameplay message type (for example `WEAPON`, `POWERUP`):
+
+1. Add it to message-type constants used for send.
+2. Add it to parser/validator allowlist (`VALID_TYPES` or equivalent).
+3. Add handler branch on receiver side.
+4. Add test log/assertion for message acceptance.
+
+If step 2 is missed, packets are silently dropped by strict parsers.
+
 ## Room Lifecycle Best Practice
 
 Before create/join in repeated tests:
@@ -144,6 +155,10 @@ This prevents stale-room rebinding and "game already started" failures.
   2. leave room
 - After leave/create/join failure, refresh room list immediately to remove stale or not-joinable entries from UI.
 - Block `Start Match` until room has required player count (for 1v1, `2/2`).
+- Auto-refresh room list should not fight user interaction:
+  - use slower polling interval by default
+  - pause or defer list refresh while user is hovering/focusing/touching the room list
+  - keep room ordering stable to prevent "Join" button position jumps
 
 ### Mobile lifecycle + zombie-session prevention
 
@@ -156,6 +171,16 @@ This prevents stale-room rebinding and "game already started" failures.
 - Handle WebGL context loss (`webglcontextlost`) on mobile resume:
   - trigger session interruption flow and return to lobby rather than keeping a broken white screen.
 
+### Host-authoritative dynamic world state (pickups/buffs)
+
+For collectible gameplay state (pickups, temporary buffs):
+
+1. Host is sole authority for collision/consume decisions.
+2. Peers send intent only when needed; host validates and applies.
+3. Host broadcasts authoritative delta (affected pickup + affected player fields).
+4. Include dynamic state in periodic snapshot fallback (for example `pickups[]`, buff expiry timestamps).
+5. Include all combat-relevant fields in respawn/snapshot payloads (weapon, cooldowns, timed buffs, hit feedback timestamps).
+
 ## Verification Checklist
 
 - [ ] Two different users can create/join/start
@@ -164,6 +189,10 @@ This prevents stale-room rebinding and "game already started" failures.
 - [ ] Joiner leave does not break host's ability to restart
 - [ ] Move/state sync works for first move and late joiner catch-up
 - [ ] No stale room is auto-rejoined after cleanup
+- [ ] New message types are accepted by strict parser (not dropped)
+- [ ] Host-authoritative pickup/buff flow stays consistent for both peers
+- [ ] Respawn/snapshot payloads restore full combat state (not just transform/hp)
+- [ ] Room list remains usable under auto-refresh (stable ordering + interaction-safe polling)
 
 ## Critical Gotchas
 
@@ -176,6 +205,8 @@ This prevents stale-room rebinding and "game already started" failures.
 - Use room-properties fallback (`setRoomProperties/getAvailableRooms`) when websocket delivery is inconsistent.
 - Host leave order matters: disconnect multiplayer -> close room -> leave room.
 - Reuse of fixed session id can cause stale room rebinding; use fresh per-connect id.
+- Adding send handlers without updating parser allowlist causes silent message loss in production.
+- If joiner can directly mutate gameplay-critical state, desync and exploit risk increase; use host-authoritative apply + rebroadcast.
 
 ## References
 

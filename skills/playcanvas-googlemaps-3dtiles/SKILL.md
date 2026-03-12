@@ -20,6 +20,7 @@ Use this when a project needs to:
 
 1. This file
 2. [patterns/physics-colliders.md](patterns/physics-colliders.md)
+3. [patterns/flat-map-workaround.md](patterns/flat-map-workaround.md)
 
 ## Preflight
 

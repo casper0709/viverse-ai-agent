@@ -1,4 +1,5 @@
 import geminiService from '../services/GeminiService.js';
+import orchestratorService from '../services/OrchestratorService.js';
 import logger from '../utils/logger.js';
 
 export const chat = async (req, res) => {
@@ -9,13 +10,13 @@ export const chat = async (req, res) => {
             return res.status(400).json({ error: 'Message is required' });
         }
 
-        // If streaming is requested
-        if (stream) {
+        // If streaming is requested (Dashboard uses streaming)
+        if (stream || true) { // Force streaming for orchestrator
             res.setHeader('Content-Type', 'text/event-stream');
             res.setHeader('Cache-Control', 'no-cache');
             res.setHeader('Connection', 'keep-alive');
 
-            const responseStream = geminiService.generateResponseStream(message, history || []);
+            const responseStream = orchestratorService.processRequest(message, history || []);
 
             for await (const chunk of responseStream) {
                 res.write(`data: ${JSON.stringify(chunk)}\n\n`);
@@ -35,10 +36,16 @@ export const chat = async (req, res) => {
     } catch (error) {
 
         logger.error(`AI Controller Error: ${error.message}`);
-        res.status(500).json({
-            success: false,
-            error: 'An error occurred while processing your request'
-        });
+        
+        if (!res.headersSent) {
+            res.status(500).json({
+                success: false,
+                error: 'An error occurred while processing your request'
+            });
+        } else {
+            res.write(`data: ${JSON.stringify({ type: 'error', content: error.message })}\n\n`);
+            res.end();
+        }
     }
 };
 

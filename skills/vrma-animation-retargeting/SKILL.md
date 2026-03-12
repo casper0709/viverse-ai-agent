@@ -60,10 +60,18 @@ avatarLocal = frameCorrect * delta * inv(frameCorrect)
 
 ## Critical Gotchas
 
-- AnimBinder path mutation is unreliable for this use case; use manual sampler.
-- Single global correction works for hips only; child bones need per-bone frame correction.
-- `instantiateRenderEntity()` not in scene graph; do not trust world rotation directly without accumulation.
-- Avoid driving target via sparse `Normalized_Avatar_*` proxy rig for full-body retargeting.
+- **TypeError: ve.split is not a function**: This occurs when `animBinder` attempts to mutate a path that isn't a string (or is missing). Avoid relying on path mutation for complex VIVERSE avatars.
+- **Bone Naming Mismatch**: VRMA files often use standard humanoid names (e.g., `Hips`, `Spine`), while VIVERSE avatars use `Avatar_Hips`, `Avatar_Spine`.
+- **Manual Sampler is Key**: Always prefer manual sampling over default binder for deterministic results.
+
+## Robust Alternative: Bone Renaming Strategy
+
+If complex retargeting logic fails or is too slow, use the **Bone Renaming** strategy:
+
+1. Iterate through the VIVERSE avatar's skeleton.
+2. For each bone starting with `Avatar_`, create an alias or rename it to the standard humanoid name (e.g., `Avatar_Hips` -> `Hips`).
+3. Load the VRMA animation. The PlayCanvas engine will now bind the curves correctly based on the matching names.
+4. This avoids the `frameCorrect` math but requires the VRMA to be in the same rest-pose orientation as the avatar.
 
 ## References
 
