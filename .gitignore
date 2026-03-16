@@ -9,3 +9,6 @@ build/
 agent_*.json
 request.json
 test_*.jpg
+
+# VIVERSE Agent Temp Directories
+.viverse_workspaces/

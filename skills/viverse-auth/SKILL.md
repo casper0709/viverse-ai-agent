@@ -42,16 +42,19 @@ Use this when a project needs:
 
 These are release blockers for any auth integration task:
 
-1. **MUST** implement robust profile chain in order:
+1. **MUST** implement the **Iframe Handshake Delay**: Wait exactly 500ms after SDK detection before calling `client.checkAuth()` to allow the message bridge to stabilize.
+2. **MUST** implement the **Robust Profile Chain** exactly as documented in `patterns/robust-profile-fetch.md`:
    - Avatar SDK `getProfile()`
    - auth client `getUserInfo()`
    - auth client `getUser()`
    - auth client `getProfileByToken(accessToken)`
    - direct API fallback (`/SS/Profiles/v3/Me`)
-2. **MUST** run profile fallback calls against the auth client where specified above (not only avatar client).
+3. **MUST** run profile fallback calls against the auth client where specified above (not only avatar client).
 3. **MUST NOT** display `account_id` (full or partial) in UI display name.
 4. **MUST** keep one top-level auth state source (`App`/provider), then pass props/context down.
-5. **MUST** rebuild before publish after App ID/env changes.
+5. **MUST** provide a **Hardcoded Fallback** for the App ID in the source code (e.g., `const APP_ID = import.meta.env.VITE_VIVERSE_CLIENT_ID || 'actual_id'`) to prevent build-time bundling failures.
+6. **MUST** rebuild before publish after App ID/env changes.
+7. **ANTI-PATTERN**: DO NOT use `matchmakingClient.connect()`. It is deprecated and throws `client.connect is not a function`. Use `new MultiplayerClient(roomId, appId, userId)` instead. Reference 'viverse-multiplayer'.
 
 ## Implementation Workflow
 
@@ -62,7 +65,7 @@ const vSdk = window.viverse || window.VIVERSE_SDK;
 
 const client = new vSdk.client({
     clientId: 'YOUR_APP_ID',            // From VIVERSE Studio
-    domain: 'account.htcvive.com'        // Required
+    domain: 'account.viverse.com'        // Required
 });
 ```
 
@@ -101,6 +104,17 @@ const profile = await avatarClient.getProfile();
 // profile.name → display name
 // profile.activeAvatar?.headIconUrl → avatar thumbnail URL
 // profile.activeAvatar?.avatarUrl → GLB avatar URL (for 3D scenes)
+
+// Example of normalizing profile data for safety and consistency:
+// (Assuming 'result.account_id' from checkAuth() is available as 'accountId')
+// const safeDisplayName = profile?.name || profile?.displayName || profile?.display_name || profile?.userName || null;
+// return {
+//     displayName: safeDisplayName,
+//     avatarUrl: profile?.activeAvatar?.avatarUrl || profile?.avatarUrl || profile?.avatar_url || profile?.profilePicUrl || null,
+//     headIconUrl: profile?.activeAvatar?.headIconUrl || profile?.headIconUrl || profile?.head_icon_url || profile?.headIcon || null,
+//     email: profile?.email || null,
+//     accountId: accountId || profile?.accountId || null, // Ensure accountId is safe
+// };
 
 > [!TIP]
 > **Production Recommendation**: For robust cross-environment compatibility (especially in VIVERSE iframes), use the [Robust Profile Fetch Pattern](patterns/robust-profile-fetch.md). It implements a multi-strategy fallback approach to ensure you always get the user's data.
@@ -151,10 +165,10 @@ async function waitForSDK(maxAttempts = 50, interval = 100) {
 
 Use this structure to avoid the common auth bugs:
 
-1. **Single source of auth state** in `App` (or a single AuthProvider).
-2. Pass `user/loading/error/login/logout` down to UI components (`AuthGate`, `Lobby`) via props/context.
-3. Keep VIVERSE SDK calls in a service layer (`ViverseService`), not inside multiple UI components.
-4. Build profile data with a multi-strategy fetch (Avatar SDK -> `getUserInfo` -> `getUser` -> `getProfileByToken` -> API fallback).
+1.  **Single source of auth state** in `App` (or a single AuthProvider).
+2.  Pass `user/loading/error/login/logout` down to UI components (`AuthGate`, `Lobby`) via props/context.
+3.  Keep VIVERSE SDK calls in a service layer (`ViverseService`), not inside multiple UI components.
+4.  Build profile data with a multi-strategy fetch (Avatar SDK -> `getUserInfo` -> `getUser` -> `getProfileByToken` -> API fallback).
 
 Minimal component wiring:
 
@@ -193,8 +207,11 @@ function App() {
 - **Flat namespace**: Some SDK versions don't have a `client` constructor — the namespace itself has methods directly. Handle both cases.
 - **checkAuth ≠ profile**: `checkAuth()` only returns auth tokens, NOT user profile data. You MUST use the Avatar SDK `getProfile()` to get display name and avatar.
 - **Iframe Auth Hang (`checkAuth:ack`)**: If the application hangs on VIVERSE Studio or logs `unhandled methods: VIVERSE_SDK/checkAuth:ack`, it is almost always caused by an **App ID mismatch**. The VIVERSE parent iframe security model prevents the auth handshake if `clientId` (from your `.env` file) does not exactly match the App ID the iframe was launched with. Double check copied `.env` files.
+- **TypeError: Cannot read properties of null (reading 'accountId')**: This occurs when `getProfile()` returns null (often due to App ID mismatch or invalid token) and the code tries to access `profile.accountId` without a check. **Safety Fix**: Always use optional chaining `profile?.accountId` or a null-guard `if (profile)`.
 - **Build-time env trap (Vite/React)**: `import.meta.env.VITE_*` is compiled at build time. If App ID changes, update `.env` and run a fresh `npm run build` before publishing. Re-publishing an old `dist` keeps the old/invalid App ID and causes guest-mode auth.
 - **`unauthorized origin` console noise**: Logs like `Received message from unauthorized origin: https://www.viverse.com` commonly indicate parent-iframe auth security rejecting the handshake (usually App ID mismatch, or redirect URI/origin not registered in Studio). Verify App ID + Studio auth settings together.
+- **Silent SSO Failure (Guest Mode Loop)**: Local development might work with manual login, but in VIVERSE Worlds, the user expects automatic SSO. If `checkAuth()` returns `null`, do NOT silently fall back to guest mode without logging a clear warning about `VITE_VIVERSE_CLIENT_ID` mismatch.
+- **Wait for Parent Handshake**: In some environments, `checkAuth` might need a few milliseconds after SDK load to establish the iframe message bridge. If `checkAuth` fails immediately, try one retry after 500ms.
 - **Duplicate auth hooks create stale UI**: Do not call `useViverseAuth()` in multiple top-level components independently (for example in both `App` and `AuthGate`). Keep one source of truth in `App`, then pass `user/loading/error/login/logout` down via props/context. This prevents "logout button looks fake" and "user info not updating after account switch" behavior caused by desynced local hook state.
 - **Logout does not always mean account switch prompt**: VIVERSE SSO can keep a parent session. App-side logout should still clear local state/client and run `checkAuth()` again, but switching to another account may still require explicit SSO sign-out at platform level.
 - **Do not expose account IDs in UI names**: Profile fetch can fail or return sparse data. Never render `account_id` directly or partially as display name. Prefer profile name/email, then generic `VIVERSE Player`.

@@ -6,9 +6,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const worldIframe = document.getElementById('world-iframe');
     const closePreviewBtn = document.getElementById('close-preview');
     const openExternalBtn = document.getElementById('open-external-preview');
+    
+    // Credentials
+    const emailInput = document.getElementById('viverse-email');
+    const passwordInput = document.getElementById('viverse-password');
+    const saveCredsBtn = document.getElementById('save-credentials-btn');
+    const credsStatus = document.getElementById('credentials-status');
 
     let chatHistory = [];
     let activeWorldUrl = "";
+    let savedCredentials = null;
+    let pendingMessage = "";
 
     function appendMessage(role, content = "") {
         const safeContent = content || "";
@@ -33,35 +41,113 @@ document.addEventListener('DOMContentLoaded', () => {
         if (indicator) indicator.remove();
     }
 
-    async function sendMessage() {
-        const message = userInput.value.trim();
+    async function sendMessage(overrideMessage = null, isAutoSend = false) {
+        const message = overrideMessage !== null ? overrideMessage : userInput.value.trim();
         if (!message) return;
 
-        appendMessage('user', message);
+        if (!isAutoSend) {
+            appendMessage('user', message);
+        }
         userInput.value = '';
         userInput.style.height = 'auto';
 
         showTypingIndicator();
 
         try {
+            const payload = { message, history: chatHistory };
+            if (savedCredentials) {
+                payload.credentials = savedCredentials;
+            }
+
             const response = await fetch('/api/ai/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message, history: chatHistory })
+                body: JSON.stringify(payload)
             });
 
-            const data = await response.json();
             removeTypingIndicator();
 
-            const text = data.reply || data.response || data.content;
-
-            if (data.success && text) {
-                appendMessage('agent', text);
-                chatHistory.push({ role: 'user', content: message });
-                chatHistory.push({ role: 'assistant', content: text });
-            } else {
-                appendMessage('system', 'Error: ' + (data.error || 'Failed to get a valid response'));
+            if (!response.ok) {
+                appendMessage('system', `Error: ${response.statusText}`);
+                return;
             }
+
+            // Create a bubble for the agent response
+            const bubble = document.createElement('div');
+            bubble.className = `message-bubble agent streaming`;
+            
+            // Container for status logs (collapsible or scrollable)
+            const statusContainer = document.createElement('div');
+            statusContainer.className = 'status-logs';
+            
+            // Container for final text
+            const textContainer = document.createElement('div');
+            textContainer.className = 'agent-text';
+            
+            bubble.appendChild(statusContainer);
+            bubble.appendChild(textContainer);
+            chatMessages.appendChild(bubble);
+
+            let accumulatedText = "";
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                const chunk = decoder.decode(value, { stream: true });
+                const lines = chunk.split('\n');
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        const dataStr = line.substring(6).trim();
+                        if (dataStr === '[DONE]') continue;
+                        
+                        try {
+                            const parsed = JSON.parse(dataStr);
+                            
+                            if (parsed.type === 'status') {
+                                const statusLine = document.createElement('div');
+                                statusLine.className = 'status-line';
+                                statusLine.innerHTML = `<span class="status-icon">⚡</span> ${parsed.content}`;
+                                statusContainer.appendChild(statusLine);
+                                // Auto-scroll status container
+                                statusContainer.scrollTop = statusContainer.scrollHeight;
+                                chatMessages.scrollTop = chatMessages.scrollHeight;
+                            } else if (parsed.type === 'text') {
+                                accumulatedText += parsed.content;
+                                textContainer.innerHTML = marked.parse(accumulatedText);
+                                chatMessages.scrollTop = chatMessages.scrollHeight;
+                            } else if (parsed.type === 'error') {
+                                const errorLine = document.createElement('div');
+                                errorLine.className = 'status-line error';
+                                errorLine.innerHTML = `⚠️ Error: ${parsed.content}`;
+                                statusContainer.appendChild(errorLine);
+                            } else if (parsed.type === 'action' && parsed.action === 'require_credentials') {
+                                pendingMessage = message; // Store intent for auto-continue
+                                const accountPanel = document.querySelector('.account-panel');
+                                accountPanel.classList.add('visible');
+                                accountPanel.classList.remove('highlight');
+                                // trigger reflow
+                                void accountPanel.offsetWidth;
+                                accountPanel.classList.add('highlight');
+                                
+                                // optionally auto-focus the email input
+                                document.getElementById('viverse-email').focus();
+                            }
+                        } catch (e) {
+                            console.warn("Failed to parse stream chunk:", dataStr);
+                        }
+                    }
+                }
+            }
+
+            bubble.classList.remove('streaming');
+            chatHistory.push({ role: 'user', content: message });
+            chatHistory.push({ role: 'assistant', content: accumulatedText });
+
         } catch (error) {
             removeTypingIndicator();
             appendMessage('system', 'Connection error: ' + error.message);
@@ -118,6 +204,33 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Force other links to open in new tab
                 link.target = "_blank";
             }
+        }
+    });
+
+    // Handle saving credentials
+    saveCredsBtn.addEventListener('click', () => {
+        const email = emailInput.value.trim();
+        const password = passwordInput.value.trim();
+        
+        if (email && password) {
+            savedCredentials = { email, password };
+            saveCredsBtn.classList.add('saved');
+            saveCredsBtn.textContent = 'Saved';
+            credsStatus.classList.remove('hidden');
+
+            if (pendingMessage) {
+                setTimeout(() => {
+                    const accountPanel = document.querySelector('.account-panel');
+                    accountPanel.classList.remove('visible'); // Hide after save
+                    sendMessage(pendingMessage, true);
+                    pendingMessage = "";
+                }, 500); // Slight delay for visual feedback
+            }
+        } else {
+            savedCredentials = null;
+            saveCredsBtn.classList.remove('saved');
+            saveCredsBtn.textContent = 'Save Credentials';
+            credsStatus.classList.add('hidden');
         }
     });
 

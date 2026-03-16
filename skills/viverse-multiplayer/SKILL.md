@@ -35,14 +35,16 @@ Use when a project needs:
 3. App ID from [VIVERSE Studio](https://studio.viverse.com/).
 4. Stable actor identity input (account id + per-connect unique suffix).
 
-## Preflight Checklist
+## Mandatory Compliance Gates (MUST PASS)
 
-- [ ] `VITE_VIVERSE_CLIENT_ID` matches target app
-- [ ] User auth is valid (has account id/token)
-- [ ] SDK namespace checked with `window.viverse || window.VIVERSE_SDK`
-- [ ] Play SDK namespace fallback checked (`window.play` / `window.Play`) for MultiplayerClient
-- [ ] You have cleanup logic for stale rooms
-- [ ] You have fallback sync path (room properties) if messages drop
+These are release blockers for any multiplayer integration task:
+
+1. **MUST** include BOTH SDK scripts in `index.html`:
+   - `viverse-sdk/index.umd.cjs`
+   - `play-sdk.umd.js`
+2. **MUST** initialize the `MultiplayerClient` with `await mp.init({ modules: { general: { enabled: true } } })`. If this is skipped, `mp.general` will fail.
+3. **MUST** run `setActor` immediately after the matchmaking client connects or joins.
+4. **MUST** use a unique `session_id` for each connect to prevent stale room rebinding.
 
 ## Implementation Workflow
 

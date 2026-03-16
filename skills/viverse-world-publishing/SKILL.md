@@ -21,13 +21,15 @@ Use this when a project needs:
 1. This file
 2. [examples/publish-workflow.md](examples/publish-workflow.md)
 
-## Preflight
+## Mandatory Compliance Gates (MUST PASS)
 
-- [ ] Logged into `viverse-cli` as correct account
-- [ ] Target App ID confirmed
-- [ ] `.env` App ID matches target publish app (for auth-enabled projects)
-- [ ] Fresh build generated after env/config changes
-- [ ] Build output path confirmed (`dist/` or `build/`)
+These are release blockers for any publishing task:
+
+1. **MUST** verify App ID bundling: After `npm run build`, you **MUST** run a `grep` command to confirm the target App ID is actually present in the `dist/` JS assets. 
+   - Example: `grep -r "YOUR_APP_ID" dist/`
+2. **MUST** use a **Hardcoded Fallback**: In the source code (e.g., `ViverseContext.tsx`), you **MUST** provide the App ID as a hardcoded fallback to the environment variable. 
+   - Example: `const APP_ID = import.meta.env.VITE_VIVERSE_CLIENT_ID || 'f9czvjes3f';`
+3. **MUST** perform a fresh build before every `viverse-cli app publish` if `.env` or App ID configuration changed.
 
 ## CLI Workflow
 
@@ -63,8 +65,11 @@ viverse-cli app publish ./dist --app-id <APP_ID>
 
 ### 6) (Optional) Auto-create app + publish
 
+> [!IMPORTANT]
+> When creating an app for the web/iframe (VIVERSE Worlds), you **MUST** use `--type world`. The default is `mobile`, which will cause `checkAuth()` to fail.
+
 ```bash
-viverse-cli app publish ./dist --auto-create-app --name "<APP_NAME>"
+viverse-cli app publish ./dist --auto-create-app --name "<APP_NAME>" --type world
 ```
 
 ## Release Checklist

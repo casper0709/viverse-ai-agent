@@ -25,7 +25,7 @@ class ViverseService {
                     try {
                         this.client = new vSdk.client({
                             clientId: import.meta.env.VITE_VIVERSE_CLIENT_ID,
-                            domain: 'account.htcvive.com'
+                            domain: 'account.viverse.com'
                         });
                         this.isInitialized = true;
                         resolve(true);

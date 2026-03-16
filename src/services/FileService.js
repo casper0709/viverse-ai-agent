@@ -4,30 +4,30 @@ import logger from '../utils/logger.js';
 
 class FileService {
     constructor() {
-        // Base directory for allowed file operations
-        this.baseDir = process.env.VIVERSE_PROJECTS_DIR || '/Users/casper_wang/Projects/AI';
+        // Base directory for allowed file operations (portable for cloud deployment)
+        this.baseDir = process.env.VIVERSE_PROJECTS_DIR || process.cwd();
     }
 
     /**
-     * Resolve and validate path is within baseDir
+     * Resolve and validate path is strictly within the allowed parameter
      */
-    resolvePath(targetPath) {
+    resolvePath(targetPath, allowedDir = this.baseDir) {
         let absolutePath;
         if (path.isAbsolute(targetPath)) {
             absolutePath = targetPath;
         } else {
-            absolutePath = path.resolve(this.baseDir, targetPath);
+            absolutePath = path.resolve(allowedDir, targetPath);
         }
 
-        if (!absolutePath.startsWith(this.baseDir)) {
-            throw new Error(`Access denied: Path ${targetPath} is outside of allowed directory ${this.baseDir}`);
+        if (!absolutePath.startsWith(allowedDir)) {
+            throw new Error(`CRITICAL SECURITY ALERT: Path ${targetPath} is strictly forbidden outside of sandbox ${allowedDir}`);
         }
         return absolutePath;
     }
 
-    async readFile(filePath) {
+    async readFile(filePath, workspacePath) {
         try {
-            const resolvedPath = this.resolvePath(filePath);
+            const resolvedPath = this.resolvePath(filePath, workspacePath || this.baseDir);
             const content = await fs.readFile(resolvedPath, 'utf8');
             return content;
         } catch (error) {
@@ -36,9 +36,9 @@ class FileService {
         }
     }
 
-    async listFiles(dirPath = '.') {
+    async listFiles(dirPath = '.', workspacePath) {
         try {
-            const resolvedPath = this.resolvePath(dirPath);
+            const resolvedPath = this.resolvePath(dirPath, workspacePath || this.baseDir);
             const files = await fs.readdir(resolvedPath, { withFileTypes: true });
             return files.map(f => ({
                 name: f.name,
@@ -51,9 +51,9 @@ class FileService {
         }
     }
 
-    async writeFile(filePath, content) {
+    async writeFile(filePath, content, workspacePath) {
         try {
-            const resolvedPath = this.resolvePath(filePath);
+            const resolvedPath = this.resolvePath(filePath, workspacePath || this.baseDir);
             await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
             await fs.writeFile(resolvedPath, content, 'utf8');
             return { success: true, path: filePath };
@@ -63,15 +63,21 @@ class FileService {
         }
     }
 
-    async runCommand(command, cwd) {
+    async runCommand(command, cwd, workspacePath) {
         const { exec } = await import('child_process');
         const { promisify } = await import('util');
         const execAsync = promisify(exec);
 
         try {
-            const workingDir = cwd ? this.resolvePath(cwd) : this.baseDir;
+            const activeDir = workspacePath || this.baseDir;
+            const workingDir = cwd ? this.resolvePath(cwd, activeDir) : activeDir;
             logger.info(`Running command: ${command} in ${workingDir}`);
-            const { stdout, stderr } = await execAsync(command, { cwd: workingDir });
+            
+            // Added 2 minute timeout to prevent orphan hanging processes
+            const { stdout, stderr } = await execAsync(command, { 
+                cwd: workingDir,
+                timeout: 120000 
+            });
 
             if (!stdout && !stderr) {
                 return { result: "Command executed successfully but produced no output." };
@@ -80,6 +86,10 @@ class FileService {
             return { stdout: stdout || "", stderr: stderr || "" };
         } catch (error) {
             logger.error(`FileService.runCommand Error: ${error.message}`);
+            // Log full error details for debugging
+            if (error.stdout) logger.info(`Final STDOUT: ${error.stdout}`);
+            if (error.stderr) logger.info(`Final STDERR: ${error.stderr}`);
+            
             return {
                 error: error.message,
                 stdout: error.stdout || "",
@@ -88,9 +98,10 @@ class FileService {
         }
     }
 
-    async runBackgroundCommand(command, cwd) {
+    async runBackgroundCommand(command, cwd, workspacePath) {
         const { spawn } = await import('child_process');
-        const workingDir = cwd ? this.resolvePath(cwd) : this.baseDir;
+        const activeDir = workspacePath || this.baseDir;
+        const workingDir = cwd ? this.resolvePath(cwd, activeDir) : activeDir;
         
         // Generate a simple Job ID based on timestamp
         const jobId = `job_${Date.now()}`;
@@ -139,13 +150,14 @@ class FileService {
         }
     }
 
-    async checkCommandStatus(jobId, cwd) {
+    async checkCommandStatus(jobId, cwd, workspacePath) {
         if (!this.activeJobs || !this.activeJobs.has(jobId)) {
             return { error: `Job ID ${jobId} not found.` };
         }
 
         const job = this.activeJobs.get(jobId);
-        const workingDir = cwd ? this.resolvePath(cwd) : this.baseDir;
+        const activeDir = workspacePath || this.baseDir;
+        const workingDir = cwd ? this.resolvePath(cwd, activeDir) : activeDir;
         const logPath = path.isAbsolute(job.logFile) ? job.logFile : path.join(workingDir, job.logFile);
 
         try {
@@ -173,6 +185,31 @@ class FileService {
         } catch (error) {
             logger.error(`Error checking job status: ${error.message}`);
             return { status: job.status, error: "Could not read log file." };
+        }
+    }
+
+    async addLesson(lesson, workspacePath) {
+        try {
+            const lessonsPath = this.resolvePath('.viverse_lessons.json', workspacePath || this.baseDir);
+            let lessons = [];
+            try {
+                const fsModule = await import('fs/promises');
+                const content = await fsModule.readFile(lessonsPath, 'utf8');
+                lessons = JSON.parse(content);
+            } catch (e) {
+                // File might not exist yet, that's fine
+            }
+            
+            if (!lessons.includes(lesson)) {
+                lessons.push(lesson);
+                const fsModule = await import('fs/promises');
+                await fsModule.writeFile(lessonsPath, JSON.stringify(lessons, null, 2), 'utf8');
+                logger.info(`FileService: Captured new lesson in ${lessonsPath}`);
+            }
+            return { success: true, lessonCount: lessons.length };
+        } catch (error) {
+            logger.error(`FileService.addLesson Error: ${error.message}`);
+            throw error;
         }
     }
 }

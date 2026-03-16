@@ -94,6 +94,91 @@ body {
     background: rgba(255, 255, 255, 0.02);
 }
 
+/* Account Panel */
+.account-panel {
+    margin-top: 32px;
+    opacity: 0;
+    max-height: 0;
+    overflow: hidden;
+    transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.account-panel.visible {
+    opacity: 1;
+    max-height: 250px;
+    margin-top: 32px;
+    overflow: visible;
+}
+
+.account-panel.highlight {
+    animation: highlightPanel 1.5s ease-out;
+}
+
+@keyframes highlightPanel {
+    0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(0, 132, 255, 0); }
+    50% { transform: scale(1.02); box-shadow: 0 0 20px 5px rgba(0, 132, 255, 0.4); }
+    100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(0, 132, 255, 0); }
+}
+
+.account-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.account-input {
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 13px;
+    outline: none;
+    transition: all 0.2s;
+}
+
+.account-input:focus {
+    border-color: var(--accent);
+    background: rgba(0, 132, 255, 0.05);
+}
+
+.account-btn {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+    padding: 10px;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.account-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.account-btn.saved {
+    background: rgba(0, 200, 100, 0.15);
+    border-color: rgba(0, 200, 100, 0.3);
+    color: #00ca88;
+}
+
+.credentials-status {
+    font-size: 12px;
+    color: #00ca88;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+}
+
+.credentials-status.hidden {
+    display: none;
+}
+
 .sidebar-footer {
     margin-top: auto;
 }
@@ -312,18 +397,8 @@ body {
     outline: none;
 }
 
-.send-btn {
-    background: var(--accent);
-    color: white;
-    border: none;
-    width: 40px;
-    height: 40px;
-    border-radius: 14px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: transform 0.2s, opacity 0.2s;
+.send-btn svg {
+    pointer-events: none;
 }
 
 .send-btn:hover {
@@ -463,4 +538,49 @@ body {
 
 .message-bubble a:hover {
     text-decoration: underline;
+}
+
+/* Streaming Status Logs */
+.status-logs {
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 12px;
+    font-family: monospace;
+    font-size: 12px;
+    color: var(--text-secondary);
+    max-height: 150px;
+    overflow-y: auto;
+}
+
+.status-logs:empty {
+    display: none;
+}
+
+.status-line {
+    margin-bottom: 6px;
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    animation: fadeIn 0.3s ease-out;
+}
+
+.status-line:last-child {
+    margin-bottom: 0;
+    color: var(--text-primary);
+}
+
+.status-line.error {
+    color: #ff6b6b;
+}
+
+.status-icon {
+    color: var(--accent);
+    font-size: 10px;
+}
+
+.message-bubble.streaming {
+    border-color: rgba(0, 132, 255, 0.4);
+    box-shadow: 0 0 10px rgba(0, 132, 255, 0.1);
 }
