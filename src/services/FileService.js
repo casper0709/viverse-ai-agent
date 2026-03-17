@@ -200,11 +200,19 @@ class FileService {
                 // File might not exist yet, that's fine
             }
             
-            if (!lessons.includes(lesson)) {
+            const sanitizedLesson = lesson.replace(/\s*\(Verified\s*\d+\)/g, '').trim();
+            const exists = lessons.some(l => {
+                const sanitizedExisting = l.replace(/\s*\(Verified\s*\d+\)/g, '').trim();
+                return sanitizedExisting === sanitizedLesson;
+            });
+            
+            if (!exists) {
                 lessons.push(lesson);
                 const fsModule = await import('fs/promises');
                 await fsModule.writeFile(lessonsPath, JSON.stringify(lessons, null, 2), 'utf8');
                 logger.info(`FileService: Captured new lesson in ${lessonsPath}`);
+            } else {
+                logger.debug(`FileService: Skipping duplicate lesson: ${sanitizedLesson}`);
             }
             return { success: true, lessonCount: lessons.length };
         } catch (error) {

@@ -42,19 +42,10 @@ Use this when a project needs:
 
 These are release blockers for any auth integration task:
 
-1. **MUST** implement the **Iframe Handshake Delay**: Wait exactly 500ms after SDK detection before calling `client.checkAuth()` to allow the message bridge to stabilize.
-2. **MUST** implement the **Robust Profile Chain** exactly as documented in `patterns/robust-profile-fetch.md`:
-   - Avatar SDK `getProfile()`
-   - auth client `getUserInfo()`
-   - auth client `getUser()`
-   - auth client `getProfileByToken(accessToken)`
-   - direct API fallback (`/SS/Profiles/v3/Me`)
-3. **MUST** run profile fallback calls against the auth client where specified above (not only avatar client).
-3. **MUST NOT** display `account_id` (full or partial) in UI display name.
-4. **MUST** keep one top-level auth state source (`App`/provider), then pass props/context down.
-5. **MUST** provide a **Hardcoded Fallback** for the App ID in the source code (e.g., `const APP_ID = import.meta.env.VITE_VIVERSE_CLIENT_ID || 'actual_id'`) to prevent build-time bundling failures.
-6. **MUST** rebuild before publish after App ID/env changes.
-7. **ANTI-PATTERN**: DO NOT use `matchmakingClient.connect()`. It is deprecated and throws `client.connect is not a function`. Use `new MultiplayerClient(roomId, appId, userId)` instead. Reference 'viverse-multiplayer'.
+1. **MUST** implement the **Iframe Handshake Delay**: Wait exactly 1200ms after SDK detection before calling `client.checkAuth()`.
+8. **MANDATORY (Shotgun Constructor - v4.5)**: When initializing `new vSdk.avatar({ ... })`, you MUST use the base URL `https://avatar.viverse.com/` and pass the token under TWO keys: `token` and `authorization`. **WARNING**: Do NOT use `accesstoken` (lowercase) as it is blocked by CORS policy.
+9. **MANDATORY (Bridge-First Recovery)**: You MUST call `client.getUserInfo()` as the primary recovery strategy. This is CORS-safe as it communicates via the VIVERSE message bridge.
+9. **MANDATORY (Version Traceability)**: Every generated code file MUST include a `VERSION_NAME` constant logged to the console.
 
 ## Implementation Workflow
 
@@ -65,12 +56,29 @@ const vSdk = window.viverse || window.VIVERSE_SDK;
 
 const client = new vSdk.client({
     clientId: 'YOUR_APP_ID',            // From VIVERSE Studio
-    domain: 'account.viverse.com'        // Required
+    domain: 'account.htcvive.com'        // MANDATORY: Do not use viverse.com for the auth domain
 });
 ```
 
 > [!IMPORTANT]
-> The SDK may expose itself as `window.viverse` or `window.VIVERSE_SDK` depending on the version. Always check both.
+> The SDK may expose itself as `window.vSdk`, `window.viverse`, or `window.VIVERSE_SDK` depending on the version. Always check all candidates.
+
+## 1.5 Bridge Resilience Pattern
+
+To avoid "openUrl" destructuring crashes during initialization, you must wait for the VIVERSE message bridge:
+
+```javascript
+const detectSdk = () => {
+  const vSdk = window.vSdk || window.viverse || window.VIVERSE_SDK;
+  const bridgeReady = vSdk && (vSdk.bridge ? vSdk.bridge.isReady !== false : true);
+
+  if (vSdk?.client && bridgeReady) {
+    // Proceed to initialize client
+  } else {
+    requestAnimationFrame(detectSdk);
+  }
+};
+```
 
 ### 2. Check Existing Session
 
@@ -89,28 +97,58 @@ if (result) {
 > [!CAUTION]
 > `checkAuth()` does **NOT** return user profile data (display name, avatar). It only returns `access_token`, `account_id`, and `expires_in`. See step 2b below.
 
-### 2b. Get User Profile (Avatar SDK)
+### 2b. Get User Profile (Hardened v3.6 Pattern)
 
-`checkAuth()` only returns auth tokens. To get the user's **display name** and **avatar thumbnail**, you must use the Avatar SDK:
+The Avatar SDK requires a **"Shotgun Constructor"** to ensure login state is recognized across all environments.
 
 ```javascript
-const vSdk = window.viverse || window.VIVERSE_SDK;
+const vSdk = window.vSdk || window.viverse || window.VIVERSE_SDK;
+const appId = import.meta.env.VITE_VIVERSE_CLIENT_ID || 'fallback_id';
+
+// MANDATORY: Bridge-First Recovery (Instant + CORS-Safe)
+const res = await client.checkAuth();
+if (res?.access_token) {
+    // Stage 1: Handshake Extraction
+    let userIdentity = {
+        name: res.nickname || res.displayName || res.user_name || 'Player',
+        picture: res.picture || res.avatar_url || '',
+        id: res.accountId || res.id,
+        source: 'Handshake'
+    };
+    setUser(userIdentity);
+
+    // Stage 2: Bridge-safe getUserInfo()
+    setTimeout(async () => {
+        try {
+            const info = await client.getUserInfo();
+            if (info) {
+                setUser(prev => ({
+                    ...prev,
+                    name: info.nickname || info.displayName || prev.name,
+                    picture: info.picture || info.avatar_url || prev.picture,
+                    source: 'Bridge'
+                }));
+            }
+        } catch (e) {}
+    }, 2500);
+}
+
+// OPTIONAL: Avatar SDK (Enhancement only, handle failure silently)
 const avatarClient = new vSdk.avatar({
-    baseURL: 'https://sdk-api.viverse.com/',
-    accessToken: result.access_token
+    baseURL: 'https://avatar.viverse.com/',
+    token: res.access_token,
+    authorization: `Bearer ${res.access_token}`
 });
-
-const profile = await avatarClient.getProfile();
-// profile.name → display name
-// profile.activeAvatar?.headIconUrl → avatar thumbnail URL
-// profile.activeAvatar?.avatarUrl → GLB avatar URL (for 3D scenes)
-
-// Example of normalizing profile data for safety and consistency:
-// (Assuming 'result.account_id' from checkAuth() is available as 'accountId')
-// const safeDisplayName = profile?.name || profile?.displayName || profile?.display_name || profile?.userName || null;
-// return {
-//     displayName: safeDisplayName,
-//     avatarUrl: profile?.activeAvatar?.avatarUrl || profile?.avatarUrl || profile?.avatar_url || profile?.profilePicUrl || null,
+try {
+    const profile = await avatarClient.getProfile();
+    if (profile) {
+        // Enhance with more specific headIcon if available
+        userIdentity.picture = profile.activeAvatar?.headIconUrl || userIdentity.picture;
+    }
+} catch (e) {
+    console.warn('Silent failure of optional profile enhancement:', e);
+}
+```
 //     headIconUrl: profile?.activeAvatar?.headIconUrl || profile?.headIconUrl || profile?.head_icon_url || profile?.headIcon || null,
 //     email: profile?.email || null,
 //     accountId: accountId || profile?.accountId || null, // Ensure accountId is safe

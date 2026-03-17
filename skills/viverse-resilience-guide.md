@@ -1,39 +1,36 @@
-# VIVERSE Integration Resilience Guide (v2.0 - Hardened)
+# VIVERSE Hub Resilience Guide (v4.5 - Bridge-First Identity)
 
-This guide contains mandatory patterns and safety checks to prevent common runtime failures in VIVERSE World projects. These are release blockers.
+> [!IMPORTANT]
+> **MANDATORY RELEASE BLOCKER CHECKLIST**
+> Before any VIVERSE publish:
+> 1. [ ] **Bridge-First Identity**: PRIMARY identity MUST be attempt via `client.getUserInfo()` (CORS-safe bridge).
+> 2. [ ] **Avatar SDK Fix**: Constructors MUST NOT include the forbidden `accesstoken` header.
+> 3. [ ] **Session-Matching Alpha**: Local `actor_id` MUST be found by matching `session_id` in the actor list.
+> 4. [ ] **Triple-Lock Auth**: Try `viverse.com` -> 1000ms delay -> Try `htcvive.com`.
+> 5. [ ] **Stability Delay**: 2500ms delay after `checkAuth()` BEFORE any optional profile enhancement.
+> 6. [ ] **Matchmaking v4.2**: `playClient.newMatchmakingClient(appId)` + Manual `session_id`.
+> 7. [ ] **Session-Matching Alpha**: Find local `actor_id` by matching `session_id` in the actor list.
 
-## 1. AUTH Resilience (The "Triple-Lock" Pattern)
-SSO failure is most commonly caused by iframe race conditions or environment variable stripping. Follow this pattern exactly:
+## 1. AUTH Resilience (Bridge-First Recovery)
 
-- **Lock 1: App ID Safeguard**: ALWAYS provide a hardcoded fallback for the App ID in the code.
-  - `const CLIENT_ID = import.meta.env.VITE_VIVERSE_CLIENT_ID || 'actual_id_here';`
-- **Lock 2: Handshake Stability**:
-    - Wait for `document.readyState === 'complete'` before starting detection.
-    - Wait exactly **1200ms** (not 500ms) after SDK detection before the first `checkAuth()`.
-- **Lock 3: Domain Fallback**:
-    - Always try `domain: 'account.viverse.com'` first.
-    - If `checkAuth()` returns `null`, wait 1000ms and try `domain: 'account.htcvive.com'` as a fallback.
-- **Robust Profile Fetch**: Use the verified 3-strategy fallback (Avatar SDK -> getUserInfo -> getUser) documented in the auth skill.
+- **Strategy 0 (Instant)**: Extract name/picture from `checkAuth()` result object.
+- **Strategy 2 (Primary Recovery)**: Call `client.getUserInfo()`. This uses the CORS-safe message bridge.
+- **Shotgun Constructor (Fixed)**: Pass token via `token` and `authorization`. DO NOT use `accesstoken`.
+- **Base URL**: Use `https://avatar.viverse.com/` (stable URL).
+- **Identity Delay**: 2500ms delay after login before attempting enhancement calls.
 
-## 2. Build & Deploy Resilience (The "Grep Gate")
-To prevent stale bundles being published:
-- **CLEAN BUILD**: ALWAYS run `rm -rf dist && npm run build` before publishing.
-- **GREP GATE**: You MUST run `grep -r "YOUR_APP_ID" dist/assets/` to confirm the App ID is successfully bundled. If not found, DO NOT PUBLISH.
+## 2. Matchmaking & Multiplayer (v4.2 Standards)
 
-## 3. Multiplayer Resilience (Initialization & Sync)
-- **Matchmaking Connect**: NEVER call `.init()` on the `MatchmakingClient`. Connection starts automatically or via handlers. Calling `.init()` on the matchmaking client is the #1 cause of "Connecting..." hangs in production.
-- **Multiplayer Init**: You MUST still call `.init()` on the `MultiplayerClient` (after room join).
-- **Actor ID Guard**: ALWAYS use `const actorId = res?.actor_session_id || mc.actor_session_id` in `onConnect`.
-- **Cleanup**: ALWAYS call `multiplayer.disconnect()` and `matchmaking.leaveRoom()` on unmount to prevent zombie sessions.
+- **Constructor**: ALWAYS use `playClient.newMatchmakingClient(appId)`.
+- **Manual Identity**: Generate `actorSessionId` (`userId-timestamp`) for `session_id`.
+- **Session-Matching**: To find your `actor_id`, iterate `mc.getMyRoomActors()` or `room.actors` and match the `session_id`.
+- **Dealer Pattern**: First actor in `mc.getActorList()` initializes the game state.
 
-## 4. Leaderboard Resilience
-- **Method Signatures**: ALWAYS pass the `clientId` (App ID) as the FIRST argument to all Leaderboard methods.
-- **Dash-Separated Names**: Leaderboard API names MUST use dashes (`-`). Underscores and spaces ARE FORBIDDEN.
+## 3. Build & Deployment (Grep Gate)
 
-## 5. UI/UX & Platform Resilience
-- **Diagnostic UX**: For complex projects, include the `ViverseDiagnostic.jsx` overlay (Shift+D) to track handshake status in real-time.
-- **SVG Click-Through**: ALWAYS add `pointer-events: none;` to SVG icons inside buttons.
-- **Identity**: You ARE Gemini 3 Flash. Maintain this identity in all system interactions.
+- **Extreme Purge**: `rm -rf dist publish_tmp` before every build.
+- **Grep Gate**: `grep -r "YOUR_APP_ID" dist/assets/` MUST match the intended World ID.
+- **Traceability**: Log a `VERSION_NAME` (e.g., `1.2.0-zero-fetch`) on startup.
 
 ---
-*Reference these rules in every VIVERSE task. A single violation is a release failure.*
+**Zero-Fetch Alpha is the terminal resilience standard. Deviations will cause DNS/CORS failure.**

@@ -21,11 +21,13 @@ class ViverseService {
                 attempts++;
                 const vSdk = window.viverse || window.VIVERSE_SDK;
 
-                if (vSdk?.client) {
+                const bridgeReady = vSdk && (vSdk.bridge ? vSdk.bridge.isReady !== false : true);
+
+                if (vSdk?.client && bridgeReady) {
                     try {
                         this.client = new vSdk.client({
                             clientId: import.meta.env.VITE_VIVERSE_CLIENT_ID,
-                            domain: 'account.viverse.com'
+                            domain: 'account.htcvive.com'
                         });
                         this.isInitialized = true;
                         resolve(true);
@@ -59,7 +61,8 @@ class ViverseService {
                     const avatarClient = new vSdk.avatar({ 
                         baseURL: 'https://sdk-api.viverse.com/', 
                         accessToken,
-                        token: accessToken, // Shotgun: try all params
+                        token: accessToken,         // Shotgun key 2
+                        authorization: accessToken, // Shotgun key 3 (NEW)
                         appId: appId,
                         clientId: appId
                     });

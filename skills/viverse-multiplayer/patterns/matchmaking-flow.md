@@ -11,56 +11,52 @@ await initMatchmakingClient();
 // MUST wait for onConnect before setActor
 await new Promise((resolve) => {
   matchmakingClient.on("onConnect", resolve);
+  matchmakingClient.on("connect", resolve); 
 });
 
-await matchmakingClient.setActor({
-  session_id: user.account_id,
-  name: user.displayName,
-  properties: {}
-});
-```
+// Proactive connect call (Tank Shooter pattern)
+if (typeof matchmakingClient.connect === 'function') await matchmakingClient.connect();
 
-## 2. Create or Join Room
+// Generate unique session ID to prevent "undefined" or guest collisions
+const actorSessionId = `${user.account_id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-Before creating/joining, clear stale room state (important for repeated tests and tab/device switching):
-
-```javascript
-// best-effort cleanup
-await closeRoom();   // only works if host; safe to ignore failure
-await leaveRoom();   // safe to ignore failure
-disconnectMultiplayer();
-disconnectMatchmaking();
-```
-
-For repeated test loops, prefer a **fresh actor session id** (instead of a static account id) to prevent stale server-side room rebinding:
-
-```javascript
-const actorSessionId = `${accountId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 await matchmakingClient.setActor({
   session_id: actorSessionId,
   name: user.displayName,
-  properties: {},
-});
-```
-
-**Create**:
-```javascript
-const res = await matchmakingClient.createRoom({
-  name: "Chess Room",
-  mode: "Room",
-  maxPlayers: 2,
-  minPlayers: 2,
   properties: {}
 });
-const room = res?.room ?? res;
-if (room?.id) { /* room created */ }
 ```
 
-**Join**:
+## 2. Join or Create Room (Robust Flow)
+
+**CRITICAL**: `joinRoom` requires a raw **Room ID string**, not an object.
+
 ```javascript
-const res = await matchmakingClient.joinRoom(roomId);
-const room = res?.room ?? res;
-if (room?.id) { /* joined */ }
+// Scan for existing sessions by name
+const roomsRes = await matchmakingClient.getAvailableRooms();
+const rooms = roomsRes?.rooms || roomsRes || [];
+const existingRoom = rooms.find(r => r.name === "My_Game_Room");
+
+let room;
+if (existingRoom) {
+  // JOIN: Must use the roomId string
+  const roomId = existingRoom.id || existingRoom.roomId;
+  const res = await matchmakingClient.joinRoom(roomId);
+  room = res?.room || res;
+} else {
+  // CREATE
+  const res = await matchmakingClient.createRoom({
+    name: "My_Game_Room",
+    mode: "Room",
+    maxPlayers: 2,
+    minPlayers: 1 // Recommended: allow host entry
+  });
+  room = res?.room || res;
+  
+  // HOST AUTO-JOIN: Ensures creator is bound to the room session
+  const roomId = room?.id || room?.roomId;
+  if (roomId) await matchmakingClient.joinRoom(roomId);
+}
 ```
 
 **List rooms** (optional):

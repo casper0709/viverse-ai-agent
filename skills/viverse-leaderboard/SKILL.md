@@ -78,13 +78,25 @@ Do not assume Studio setup exists even if code is correct.
 
 ### 1) Initialize Dashboard Client
 
+**CRITICAL**: Use specific URLs and the correct token source to avoid bridge errors.
+
 ```javascript
-const v = window.viverse || window.VIVERSE_SDK;
+// Step A: Prefer specific dashboard token
+let dashboardToken = auth.access_token;
+if (client?.getToken) {
+    const res = await client.getToken();
+    dashboardToken = typeof res === 'string' ? res : (res?.access_token || dashboardToken);
+}
+
+// Step B: Initialize with Base URLs
+const v = window.vSdk || window.viverse || window.VIVERSE_SDK;
 const DashboardClass = v?.gameDashboard || v?.GameDashboard;
+
 const gameDashboardClient = new DashboardClass({
-  token: accessToken,
-  baseURL: "https://www.viveport.com/",
-  communityBaseURL: "https://www.viverse.com/",
+  token: dashboardToken,
+  clientId: appId, // Mandatory
+  baseURL: "https://www.viveport.com/",         // MANDATORY for production
+  communityBaseURL: "https://www.viverse.com/", // MANDATORY for production
 });
 ```
 
@@ -101,15 +113,22 @@ await gameDashboardClient.uploadLeaderboardScore(appId, [
 ### 3) Fetch leaderboard
 
 ```javascript
-const res = await gameDashboardClient.getLeaderboard(appId, {
-  name: leaderboardName,
-  range_start: 0,
-  range_end: 9,
-  region: "global",
-  time_range: "alltime",
-  around_user: false,
-});
-const rankings = res?.rankings || [];
+const configs = [
+  { name: leaderboardName, range_start: 0, range_end: 9, region: "global", time_range: "alltime", around_user: false },
+  { name: leaderboardName, range_start: 0, range_end: 9, region: "global", time_range: "alltime", around_user: true },
+  { name: leaderboardName, range_start: 0, range_end: 9, region: "local", time_range: "alltime", around_user: false },
+];
+
+let rankings = [];
+for (const conf of configs) {
+    const res = await gameDashboardClient.getLeaderboard(appId, conf);
+    // Robust Extraction
+    const extracted = res?.rankings || res?.ranking || res?.leaderboard_rankings || res?.data?.rankings || [];
+    if (extracted.length > 0) {
+        rankings = extracted;
+        break;
+    }
+}
 ```
 
 Fallback query order when `rankings` is empty:

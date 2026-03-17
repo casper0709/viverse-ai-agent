@@ -35,57 +35,79 @@ Use when a project needs:
 3. App ID from [VIVERSE Studio](https://studio.viverse.com/).
 4. Stable actor identity input (account id + per-connect unique suffix).
 
-## Mandatory Compliance Gates (MUST PASS)
-
-These are release blockers for any multiplayer integration task:
-
-1. **MUST** include BOTH SDK scripts in `index.html`:
-   - `viverse-sdk/index.umd.cjs`
-   - `play-sdk.umd.js`
 2. **MUST** initialize the `MultiplayerClient` with `await mp.init({ modules: { general: { enabled: true } } })`. If this is skipped, `mp.general` will fail.
-3. **MUST** run `setActor` immediately after the matchmaking client connects or joins.
+3. **MUST** use **Session-Matching Alpha** to find local `actor_id`: Match local `session_id` against the list in `mc.getMyRoomActors()` or `room.actors`.
+4. **MUST NOT** call `mc.getActorId()` (Hallucination - Does not exist).
+5. **MUST** run `setActor` immediately after the matchmaking client connects or joins.
 4. **MUST** use a unique `session_id` for each connect to prevent stale room rebinding.
 
 ## Implementation Workflow
 
-### 1) Init Play + Matchmaking
+### 1) Init Play + Matchmaking (Hardened v3.7)
+
+Do NOT rely on automatic connection. Use a Promise to guarantee the client is ready.
 
 ```javascript
-const v = window.viverse || window.VIVERSE_SDK;
-const PlayClass = v.Play || v.play || window.play?.Play || window.play?.play || window.Play;
-globalThis.playClient = new PlayClass();
-globalThis.matchmakingClient = await playClient.newMatchmakingClient(appId);
+const v = window.vSdk || window.viverse || window.VIVERSE_SDK;
+const PlayClass = v.Play || v.play || window.play?.Play || window.Play;
+const playClient = new PlayClass();
+
+const mc = await playClient.newMatchmakingClient(appId);
+
+// MANDATORY: Proactive unique session ID
+const actorSessionId = `${user.accountId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+// MANDATORY: Explicit Connect with Promise Race
+const isConnected = await new Promise((resolve) => {
+    let resolved = false;
+    const done = (val) => { if (!resolved) { resolved = true; resolve(val); } };
+    mc.on("onConnect", () => done(true));
+    mc.on("connect", () => done(true));
+    if (typeof mc.connect === 'function') mc.connect().catch(() => {});
+    setTimeout(() => done(false), 5000); // 5s timeout
+});
+
+if (!isConnected) console.warn('Matchmaking connection could not be verified, proceeding anyway...');
+
+// MANDATORY: Manual actor setup (v3.8)
+// Use the UNIQUE actorSessionId as the session_id to prevent stale session rebinding
+await mc.setActor({
+    session_id: actorSessionId,
+    name: user.displayName || 'Player',
+    properties: { avatarUrl: user.avatarUrl },
+});
 ```
 
-### 2) Wait for connect, then set actor
+### 3) Join or Create Room (Robust Flow)
+
+**CRITICAL**: `joinRoom` requires a raw **Room ID string**, not an object.
 
 ```javascript
-matchmakingClient.on("onConnect", async () => {
-  await matchmakingClient.setActor({
-    session_id: actorSessionId, // recommended: account-based + per-connect suffix
-    name: user.displayName,
-    properties: {},
+// Scan for existing lobby
+const roomsRes = await mc.getAvailableRooms();
+const rooms = roomsRes?.rooms || roomsRes || [];
+const existing = rooms.find(r => r.name === "My_Game_Lobby");
+
+let room;
+if (existing) {
+  // Join by ID
+  const res = await mc.joinRoom(existing.id || existing.roomId);
+  room = res?.room || res;
+} else {
+  // Create
+  const res = await mc.createRoom({
+    name: "My_Game_Lobby",
+    mode: "Room",
+    maxPlayers: 2,
+    minPlayers: 1 // Allow host to enter immediately
   });
-});
+  room = res?.room || res;
+  
+  // MANDATORY: Host auto-join (ensures session consistency)
+  const roomId = room?.id || room?.roomId;
+  if (roomId) await mc.joinRoom(roomId);
+}
 ```
-
-### 3) Create or join room
-
-```javascript
-const room = await matchmakingClient.createRoom({
-  name: "My Game Room",
-  mode: "Room",
-  maxPlayers: 2,
-  minPlayers: 2,
-  properties: {}
-});
-
-const joined = await matchmakingClient.joinRoom(roomId);
-```
-
-Handle both response shapes:
-- `{ room }`
-- `{ success, message, room }`
 
 ### 4) Start game (host only)
 
@@ -198,8 +220,8 @@ For collectible gameplay state (pickups, temporary buffs):
 
 ## Critical Gotchas
 
-- `setActor` must run after matchmaking connect.
-- If `Start Match` fails with `Multiplayer SDK missing`, Play SDK namespace resolution is incomplete; check both `window.viverse` and `window.play/window.Play` and ensure play-sdk script is loaded.
+- **Session-Matching Alpha**: To find your `actor_id`, iterate `room.actors` and find the one where `actor.session_id === mySessionId`.
+- **MANDATORY**: Do NOT call `getActorId()`.
 - Register/start handlers before calling `startGame` to avoid missed events.
 - Use `mp.general.sendMessage(...)` with bound context; avoid detached fn refs.
 - Bridge both `mp.onMessage` and `mp.general.onMessage` in mixed environments.

@@ -70,26 +70,9 @@ Available Documentation (Use 'readDoc' to read):
 - usage.md: Server-level documentation for running and prompts for the Antigravity agent.`;
         logger.info(`Indexed documentation with Deep Summaries.`);
 
-        // Load Skills (Deep Summary Index with Release Blockers)
-        this.skillsSummary = `Available Skills (Use 'loadSkill' to read full details):
-- viverse-auth: Detailed patterns for SSO login and profile bootstrapping via 'vSdk.client'.
-- viverse-multiplayer: Real-time sync patterns using Matchmaking and Multiplayer clients.
-- viverse-leaderboard: Guide for score uploads and ranking retrieval via 'gameDashboard'. (Note: API names MUST NOT use underscores; use dashes instead).
-- viverse-world-publishing: CLI-based deployment workflows for VIVERSE Worlds.
-- viverse-design-system: MANDATORY patterns for premium UI, HSL tokens, and glassmorphism.
-- viverse-avatar-sdk: Asset loading blueprints and Retargeting logic.
-- playcanvas-avatar-navigation: Physics movement and Ammo.js integration.
-- viverse-r3f-foundation: R3F templates with VIVERSE provider integration.
-
-VIVERSE INTEGRATION RELEASE BLOCKERS (Always Follow):
-1. AUTH: You MUST implement an automatic SSO check on mount (checkAuth). You MUST wait exactly 500ms after SDK detection before calling checkAuth() to allow the iframe message bridge to stabilize. If checkAuth() returns null inside a VIVERSE frame, it is almost always an APP ID MISMATCH. You MUST use the 'Robust Profile Fetch' pattern (Avatar SDK -> getUserInfo -> getUser -> Direct API) to ensure display names/avatars load correctly. Reference 'viverse-auth'.
-2. LEADERS: You MUST explicitly remind the user to create the leaderboard in VIVERSE Studio with the exact API Name used in '.env'. IMPORTANT: Leaderboard API Names MUST NOT use underscores (_); use dashes (-) instead. Reference 'viverse-leaderboard'.
-3. MULTI: You MUST call 'setActor' immediately AFTER matchmaking 'onConnect'. You MUST implement room lifecycle cleanup (disconnect -> leave) to prevent stale sessions. Reference 'viverse-multiplayer'.
-4. WORLD & SSO: VITE environment variables (VITE_VIVERSE_CLIENT_ID) are bundled at build-time. You MUST run 'npm run build' after ANY App ID or '.env' change. AFTER building, you MUST run 'grep -r YOUR_APP_ID dist/' to verify the ID is actually bundled. You MUST also use a hardcoded fallback in the code (e.g., const id = env.id || 'id') as a safety measure. You MUST implement 'Runtime Observability': Log APP_ID and SDK status to the console on mount, and include a 10s timeout for SDK loading with a clear error message (Network Error, Adblock) to avoid indefinite hangs. Re-publishing an old build with a new App ID in .env WILL BREAK SSO. Reference 'viverse-world-publishing'.
-5. AVATAR: VIVERSE avatars often use 'Avatar_' prefixes (for example 'Avatar_Hips'). You MUST alias or retarget standard humanoid names (for example 'Hips') to these Avatar bones for animations to work. Reference 'vrma-animation-retargeting'.
-6. SECURITY: You MUST NEVER display or yield raw user credentials (email/password) in your text responses. Always assume credentials provided in context are secret. Check 'OrchestratorService' for sanitization rules.
-7. AESTHETICS: You MUST NOT build "sad" or basic UIs. Every project MUST include HSL design tokens, glassmorphism, and dynamic hover/active states. First impressions are critical. Reference 'viverse-design-system'.`;
-        logger.info(`Indexed skills with Deep Summaries and all Release Blockers.`);
+        // Initialize Knowledge (Will be refreshed dynamically)
+        this.skillsSummary = "";
+        this.refreshKnowledge();
 
         // Available tools declarations
         this.allToolDeclarations = {
@@ -202,6 +185,43 @@ VIVERSE INTEGRATION RELEASE BLOCKERS (Always Follow):
         this.models = {};
     }
 
+    async refreshKnowledge() {
+        logger.info('GeminiService: Refreshing dynamic knowledge base...');
+        try {
+            const skillsDir = path.resolve(process.cwd(), 'skills');
+            const items = await fs.promises.readdir(skillsDir, { withFileTypes: true });
+            
+            let summary = "Available Skills (Use 'loadSkill' to read full details):\n";
+            
+            // 1. Scan Skills Directory
+            for (const item of items) {
+                if (item.isDirectory()) {
+                    const skillName = item.name;
+                    const skillPath = path.join(skillsDir, skillName, 'SKILL.md');
+                    if (fs.existsSync(skillPath)) {
+                        // Extract title/description from frontmatter if possible, or use name
+                        summary += `- ${skillName}\n`;
+                    }
+                }
+            }
+
+            // 2. Load the Hardened Resilience Guide (MANDATORY RELEASE BLOCKERS)
+            const guidePath = path.join(skillsDir, 'viverse-resilience-guide.md');
+            if (fs.existsSync(guidePath)) {
+                const guideContent = fs.readFileSync(guidePath, 'utf8');
+                summary += `\n[MANDATORY RESILIENCE GATES - v2.0 Hardened]\n${guideContent}\n`;
+            }
+
+            this.skillsSummary = summary;
+            
+            // Clear model cache to force re-injection of updated system instructions
+            this.models = {};
+            logger.info('GeminiService: Knowledge refreshed and model cache cleared.');
+        } catch (e) {
+            logger.error(`Failed to refresh knowledge: ${e.message}`);
+        }
+    }
+
     /**
      * Get or create a specialized model for a role
      */
@@ -237,7 +257,15 @@ VIVERSE INTEGRATION RELEASE BLOCKERS (Always Follow):
         let response = await result.response;
 
         // Tool calling loop
+        let toolIterations = 0;
+        const MAX_TOOL_ITERATIONS = 40;
+        
         while (response.functionCalls()) {
+            toolIterations++;
+            if (toolIterations > MAX_TOOL_ITERATIONS) {
+                logger.error(`GeminiService: MAX_TOOL_ITERATIONS reached in generateResponse.`);
+                break;
+            }
             const modelParts = response.candidates[0].content.parts;
             
             // Re-hydrate thoughtSignatures
@@ -299,7 +327,16 @@ VIVERSE INTEGRATION RELEASE BLOCKERS (Always Follow):
 
         let response = await result.response;
 
+        let toolIterationsCount = 0;
+        const MAX_TOOL_ITERATIONS_COUNT = 40;
+
         while (response.functionCalls()) {
+            toolIterationsCount++;
+            if (toolIterationsCount > MAX_TOOL_ITERATIONS_COUNT) {
+                logger.error(`GeminiService: MAX_TOOL_ITERATIONS reached in generateResponseStream.`);
+                yield { type: 'text', content: "\n\n[SYSTEM ERROR]: Periodic maintenance loop detected. Automatically stabilizing agent..." };
+                break;
+            }
             const modelParts = response.candidates[0].content.parts;
             
             // Re-hydrate thoughtSignatures
@@ -438,7 +475,7 @@ VIVERSE INTEGRATION RELEASE BLOCKERS (Always Follow):
         // Token Optimization: If history is too long, we only keep the most recent turns.
         // A typical turn (user + model) can be 1k-5k tokens. 
         // We cap at the last 15 turns to balance context and token usage.
-        const MAX_HISTORY_TURNS = 15;
+        const MAX_HISTORY_TURNS = 50;
         const recentHistory = history.length > MAX_HISTORY_TURNS 
             ? history.slice(-MAX_HISTORY_TURNS) 
             : history;

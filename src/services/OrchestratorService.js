@@ -13,6 +13,8 @@ class OrchestratorService {
     async *processRequest(message, history = [], credentials = null) {
         logger.info(`Orchestrator: Processing request: ${message}`);
         
+        // Ensure agents have the latest dynamic knowledge (skills/resilience guide)
+        await geminiService.refreshKnowledge();
         const workSpaceDir = path.resolve(process.cwd(), '.viverse_workspaces');
         const lowerMsg = message.toLowerCase().trim();
         const isResumeCommand = ["proceed", "continue", "go on", "ok", "yes", "next"].includes(lowerMsg);

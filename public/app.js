@@ -18,13 +18,21 @@ document.addEventListener('DOMContentLoaded', () => {
     let savedCredentials = null;
     let pendingMessage = "";
 
+    function scrollToBottom() {
+        const threshold = 50;
+        const isAtBottom = chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight < threshold;
+        if (isAtBottom) {
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+    }
+
     function appendMessage(role, content = "") {
         const safeContent = content || "";
         const bubble = document.createElement('div');
         bubble.className = `message-bubble ${role}`;
         bubble.innerHTML = marked.parse(safeContent);
         chatMessages.appendChild(bubble);
-        chatMessages.scrollTop = chatMessages.scrollHeight;
+        scrollToBottom();
     }
 
     function showTypingIndicator() {
@@ -33,7 +41,7 @@ document.addEventListener('DOMContentLoaded', () => {
         indicator.id = 'typing-indicator';
         indicator.innerHTML = '<div class="dot"></div><div class="dot"></div><div class="dot"></div>';
         chatMessages.appendChild(indicator);
-        chatMessages.scrollTop = chatMessages.scrollHeight;
+        scrollToBottom();
     }
 
     function removeTypingIndicator() {
@@ -42,15 +50,17 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function sendMessage(overrideMessage = null, isAutoSend = false) {
-        const message = overrideMessage !== null ? overrideMessage : userInput.value.trim();
-        if (!message) return;
+        // Fix for event listener passing PointerEvent as first arg
+        const actualMessage = (overrideMessage && typeof overrideMessage === 'string') ? overrideMessage : userInput.value.trim();
+        if (!actualMessage) return;
 
         if (!isAutoSend) {
-            appendMessage('user', message);
+            appendMessage('user', actualMessage);
         }
         userInput.value = '';
         userInput.style.height = 'auto';
 
+        document.body.classList.add('is-processing');
         showTypingIndicator();
 
         try {
@@ -115,11 +125,11 @@ document.addEventListener('DOMContentLoaded', () => {
                                 statusContainer.appendChild(statusLine);
                                 // Auto-scroll status container
                                 statusContainer.scrollTop = statusContainer.scrollHeight;
-                                chatMessages.scrollTop = chatMessages.scrollHeight;
+                                scrollToBottom();
                             } else if (parsed.type === 'text') {
                                 accumulatedText += parsed.content;
                                 textContainer.innerHTML = marked.parse(accumulatedText);
-                                chatMessages.scrollTop = chatMessages.scrollHeight;
+                                scrollToBottom();
                             } else if (parsed.type === 'error') {
                                 const errorLine = document.createElement('div');
                                 errorLine.className = 'status-line error';
@@ -145,11 +155,13 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             bubble.classList.remove('streaming');
-            chatHistory.push({ role: 'user', content: message });
+            document.body.classList.remove('is-processing');
+            chatHistory.push({ role: 'user', content: actualMessage });
             chatHistory.push({ role: 'assistant', content: accumulatedText });
 
         } catch (error) {
             removeTypingIndicator();
+            document.body.classList.remove('is-processing');
             appendMessage('system', 'Connection error: ' + error.message);
         }
     }

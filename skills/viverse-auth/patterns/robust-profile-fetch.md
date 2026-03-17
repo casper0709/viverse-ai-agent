@@ -17,8 +17,19 @@ Copy this helper into your project (e.g., `utils/viverseHelper.js`):
  * @param {string} accountId - The account ID from checkAuth()
  * @returns {Promise<Object>} The profile object { displayName, avatarUrl, headIconUrl }
  */
-export async function fetchViverseProfile(vSdk, client, accessToken, accountId) {
+export async function fetchViverseProfile(vSdk, client, accessToken, accountId, authData = null) {
     let profile = null;
+
+    // Strategy 0: Direct Handshake Recovery (CRITICAL)
+    // Often name is hidden in the auth handshake itself before any API call
+    if (authData) {
+        try {
+            const recoveredName = authData.user_name || authData.display_name || authData.email || authData.name;
+            if (recoveredName && typeof recoveredName === 'string' && !recoveredName.includes('-')) {
+                profile = { ...profile, displayName: recoveredName, name: recoveredName };
+            }
+        } catch (e) {}
+    }
 
     // Helper to check if we have what we need (avatar)
     const hasAvatar = (p) => p && (p.activeAvatar?.avatarUrl || p.avatarUrl || p.avatar_url || p.profilePicUrl);
@@ -30,8 +41,8 @@ export async function fetchViverseProfile(vSdk, client, accessToken, accountId) 
             const avatarClient = new vSdk.avatar({
                 baseURL: 'https://sdk-api.viverse.com/',
                 accessToken: accessToken, 
-                token: accessToken,
-                authorization: accessToken,
+                token: accessToken,         // Shotgun key 2
+                authorization: accessToken, // Shotgun key 3
                 appId: appId,
                 clientId: appId
             });
@@ -125,6 +136,13 @@ async function checkAuth() {
     // 1. Get Auth Token
     const authResult = await client.checkAuth();
     if (!authResult) return null;
+
+    // 1b. Wait for Bridge Resilience
+    const bridgeReady = vSdk && (vSdk.bridge ? vSdk.bridge.isReady !== false : true);
+    if (!bridgeReady) {
+        console.warn('Bridge not ready, delaying profile fetch...');
+        await new Promise(r => setTimeout(r, 500));
+    }
 
     // 2. Fetch Profile Robustly
     const vSdk = window.viverse || window.VIVERSE_SDK;

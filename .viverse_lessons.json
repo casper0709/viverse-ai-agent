@@ -1,0 +1,5 @@
+[
+  "Implement a retry loop (10x, 200ms) for Actor ID in onConnect and use null-safe fallback (e.g. (id || '').slice(-4)) for all string operations on user IDs to prevent runtime crashes.",
+  "Robust Profile Fetch requires: 1200ms handshake, 2000ms Avatar SDK delay, then sequence: avatarSdk.getUserInfo -> auth.getUserInfo -> auth.getUser.",
+  "Multiplayer sync for poker requires a 'Dealer' role (first actor) to initialize the deck and table state to avoid race conditions."
+]
