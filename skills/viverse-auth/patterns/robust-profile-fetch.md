@@ -31,8 +31,19 @@ export async function fetchViverseProfile(vSdk, client, accessToken, accountId, 
         } catch (e) {}
     }
 
-    // Helper to check if we have what we need (avatar)
-    const hasAvatar = (p) => p && (p.activeAvatar?.avatarUrl || p.avatarUrl || p.avatar_url || p.profilePicUrl);
+    // Helper checks so we can stop only when identity is actually usable
+    const hasIdentity = (p) =>
+        !!(p && (p.displayName || p.display_name || p.name || p.nickname || p.userName || p.email));
+    const hasAvatar = (p) =>
+        !!(p && (
+            p.activeAvatar?.headIconUrl ||
+            p.activeAvatar?.head_icon_url ||
+            p.headIconUrl ||
+            p.head_icon_url ||
+            p.avatarUrl ||
+            p.avatar_url ||
+            p.profilePicUrl
+        ));
 
     // Strategy 1: Avatar SDK (Modern Standard)
     if (vSdk?.avatar && accessToken) {
@@ -40,7 +51,7 @@ export async function fetchViverseProfile(vSdk, client, accessToken, accountId, 
             const appId = import.meta.env.VITE_VIVERSE_CLIENT_ID;
             const avatarClient = new vSdk.avatar({
                 baseURL: 'https://sdk-api.viverse.com/',
-                accessToken: accessToken, 
+                accessToken: accessToken,
                 token: accessToken,         // Shotgun key 2
                 authorization: accessToken, // Shotgun key 3
                 appId: appId,
@@ -53,8 +64,8 @@ export async function fetchViverseProfile(vSdk, client, accessToken, accountId, 
     }
 
     // Strategy 2: client.getUserInfo() (Standard SDK)
-    // Continue if we don't have a profile OR if the profile we have is missing an avatar
-    if (!profile || !hasAvatar(profile)) {
+    // Continue if profile is missing or incomplete
+    if (!profile || (!hasIdentity(profile) && !hasAvatar(profile))) {
         if (client?.getUserInfo) {
             try { 
                 const p = await client.getUserInfo();
@@ -64,7 +75,7 @@ export async function fetchViverseProfile(vSdk, client, accessToken, accountId, 
     }
 
     // Strategy 3: client.getUser() (Legacy/Iframe)
-    if (!profile || !hasAvatar(profile)) {
+    if (!profile || (!hasIdentity(profile) && !hasAvatar(profile))) {
         if (client?.getUser) {
             try { 
                 const p = await client.getUser(); 
@@ -74,7 +85,7 @@ export async function fetchViverseProfile(vSdk, client, accessToken, accountId, 
     }
 
     // Strategy 4: client.getProfileByToken() (Alternative)
-    if (!profile || !hasAvatar(profile)) {
+    if (!profile || (!hasIdentity(profile) && !hasAvatar(profile))) {
         if (client?.getProfileByToken) {
             try { 
                 const p = await client.getProfileByToken(accessToken); 
@@ -84,7 +95,7 @@ export async function fetchViverseProfile(vSdk, client, accessToken, accountId, 
     }
 
     // Strategy 5: Direct API Call (Last Resort)
-    if ((!profile || !hasAvatar(profile)) && accessToken) {
+    if ((!profile || (!hasIdentity(profile) && !hasAvatar(profile))) && accessToken) {
         try {
             const resp = await fetch('https://account-profile.htcvive.com/SS/Profiles/v3/Me', {
                 headers: { 'Authorization': `Bearer ${accessToken}` }
@@ -111,15 +122,25 @@ export async function fetchViverseProfile(vSdk, client, accessToken, accountId, 
 
     const safeDisplayName = preferredName && !looksLikeUuid(preferredName)
         ? preferredName
-        : accountId
-            ? `VIVERSE Player ${String(accountId).slice(0, 6)}`
-            : 'VIVERSE Player';
+        : 'VIVERSE Player';
 
     // Normalize the result
     return {
         displayName: safeDisplayName,
-        avatarUrl: profile?.activeAvatar?.avatarUrl || profile?.avatarUrl || profile?.avatar_url || profile?.profilePicUrl || null,
-        headIconUrl: profile?.activeAvatar?.headIconUrl || profile?.headIconUrl || profile?.head_icon_url || profile?.headIcon || null,
+        avatarUrl:
+            profile?.activeAvatar?.avatarUrl ||
+            profile?.activeAvatar?.avatar_url ||
+            profile?.avatarUrl ||
+            profile?.avatar_url ||
+            profile?.profilePicUrl ||
+            null,
+        headIconUrl:
+            profile?.activeAvatar?.headIconUrl ||
+            profile?.activeAvatar?.head_icon_url ||
+            profile?.headIconUrl ||
+            profile?.head_icon_url ||
+            profile?.headIcon ||
+            null,
         email: profile?.email || null,
     };
 }

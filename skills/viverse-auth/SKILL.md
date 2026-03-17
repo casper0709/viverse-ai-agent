@@ -42,10 +42,14 @@ Use this when a project needs:
 
 These are release blockers for any auth integration task:
 
-1. **MUST** implement the **Iframe Handshake Delay**: Wait exactly 1200ms after SDK detection before calling `client.checkAuth()`.
-8. **MANDATORY (Shotgun Constructor - v4.5)**: When initializing `new vSdk.avatar({ ... })`, you MUST use the base URL `https://avatar.viverse.com/` and pass the token under TWO keys: `token` and `authorization`. **WARNING**: Do NOT use `accesstoken` (lowercase) as it is blocked by CORS policy.
-9. **MANDATORY (Bridge-First Recovery)**: You MUST call `client.getUserInfo()` as the primary recovery strategy. This is CORS-safe as it communicates via the VIVERSE message bridge.
-9. **MANDATORY (Version Traceability)**: Every generated code file MUST include a `VERSION_NAME` constant logged to the console.
+1. **MUST** implement the **Iframe Handshake Delay**: wait 1200ms after SDK detection before first `client.checkAuth()`.
+2. **MUST** use auth domain `account.htcvive.com` for `new vSdk.client(...)`.
+3. **MUST** use the Avatar SDK constructor with base URL `https://sdk-api.viverse.com/`.
+4. **MUST** pass token as `accessToken`, `token`, and `authorization` when constructing `new vSdk.avatar(...)`.
+5. **MUST NOT** use request header/key `accesstoken` (lowercase); it is blocked in production CORS preflight.
+6. **MUST** run this profile strategy order: `avatarClient.getProfile()` -> `client.getUserInfo()` -> `client.getUser()` -> `client.getProfileByToken(token)` -> direct API fallback.
+7. **MUST NOT** display `account_id` (full or partial) as username in UI fallback.
+8. **MANDATORY (Version Traceability)**: generated auth code must include a `VERSION_NAME` constant logged on startup.
 
 ## Implementation Workflow
 
@@ -97,66 +101,93 @@ if (result) {
 > [!CAUTION]
 > `checkAuth()` does **NOT** return user profile data (display name, avatar). It only returns `access_token`, `account_id`, and `expires_in`. See step 2b below.
 
-### 2b. Get User Profile (Hardened v3.6 Pattern)
+### 2b. Get User Profile (Canonical Robust Pattern)
 
-The Avatar SDK requires a **"Shotgun Constructor"** to ensure login state is recognized across all environments.
+`checkAuth()` gives token/account identity, then profile must be recovered with a deterministic fallback chain.
 
 ```javascript
 const vSdk = window.vSdk || window.viverse || window.VIVERSE_SDK;
-const appId = import.meta.env.VITE_VIVERSE_CLIENT_ID || 'fallback_id';
+const appId = import.meta.env.VITE_VIVERSE_CLIENT_ID;
+const auth = await client.checkAuth();
+if (!auth?.access_token) return null;
 
-// MANDATORY: Bridge-First Recovery (Instant + CORS-Safe)
-const res = await client.checkAuth();
-if (res?.access_token) {
-    // Stage 1: Handshake Extraction
-    let userIdentity = {
-        name: res.nickname || res.displayName || res.user_name || 'Player',
-        picture: res.picture || res.avatar_url || '',
-        id: res.accountId || res.id,
-        source: 'Handshake'
-    };
-    setUser(userIdentity);
+let mergedProfile = null;
+const token = auth.access_token;
+const accountId = auth.account_id;
 
-    // Stage 2: Bridge-safe getUserInfo()
-    setTimeout(async () => {
-        try {
-            const info = await client.getUserInfo();
-            if (info) {
-                setUser(prev => ({
-                    ...prev,
-                    name: info.nickname || info.displayName || prev.name,
-                    picture: info.picture || info.avatar_url || prev.picture,
-                    source: 'Bridge'
-                }));
-            }
-        } catch (e) {}
-    }, 2500);
+const merge = (p) => {
+  if (!p || typeof p !== 'object') return;
+  mergedProfile = mergedProfile ? { ...mergedProfile, ...p } : { ...p };
+};
+
+// 1) Avatar SDK primary path (tank-aligned)
+if (vSdk?.avatar) {
+  try {
+    const avatarClient = new vSdk.avatar({
+      baseURL: 'https://sdk-api.viverse.com/',
+      accessToken: token,
+      token,
+      authorization: token,
+      appId,
+      clientId: appId,
+    });
+    merge(await avatarClient.getProfile());
+  } catch (_) {}
 }
 
-// OPTIONAL: Avatar SDK (Enhancement only, handle failure silently)
-const avatarClient = new vSdk.avatar({
-    baseURL: 'https://avatar.viverse.com/',
-    token: res.access_token,
-    authorization: `Bearer ${res.access_token}`
+// 2) Bridge-safe identity recovery
+if (!mergedProfile?.displayName && client?.getUserInfo) {
+  try { merge(await client.getUserInfo()); } catch (_) {}
+}
+
+// 3) Legacy fallback
+if (!mergedProfile?.displayName && client?.getUser) {
+  try { merge(await client.getUser()); } catch (_) {}
+}
+
+// 4) Token-based fallback
+if (!mergedProfile?.displayName && client?.getProfileByToken) {
+  try { merge(await client.getProfileByToken(token)); } catch (_) {}
+}
+
+// 5) Optional direct API fallback (environment-dependent, may be blocked by CORS)
+if (!mergedProfile?.displayName) {
+  try {
+    const resp = await fetch('https://account-profile.htcvive.com/SS/Profiles/v3/Me', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (resp.ok) merge(await resp.json());
+  } catch (_) {}
+}
+
+const displayName =
+  mergedProfile?.displayName ||
+  mergedProfile?.display_name ||
+  mergedProfile?.name ||
+  mergedProfile?.nickname ||
+  mergedProfile?.userName ||
+  mergedProfile?.email ||
+  'VIVERSE Player';
+
+const avatarUrl =
+  mergedProfile?.activeAvatar?.headIconUrl ||
+  mergedProfile?.activeAvatar?.head_icon_url ||
+  mergedProfile?.headIconUrl ||
+  mergedProfile?.head_icon_url ||
+  mergedProfile?.avatarUrl ||
+  mergedProfile?.avatar_url ||
+  null;
+
+setUser({
+  accountId,
+  accessToken: token,
+  displayName,
+  avatarUrl,
 });
-try {
-    const profile = await avatarClient.getProfile();
-    if (profile) {
-        // Enhance with more specific headIcon if available
-        userIdentity.picture = profile.activeAvatar?.headIconUrl || userIdentity.picture;
-    }
-} catch (e) {
-    console.warn('Silent failure of optional profile enhancement:', e);
-}
 ```
-//     headIconUrl: profile?.activeAvatar?.headIconUrl || profile?.headIconUrl || profile?.head_icon_url || profile?.headIcon || null,
-//     email: profile?.email || null,
-//     accountId: accountId || profile?.accountId || null, // Ensure accountId is safe
-// };
 
 > [!TIP]
-> **Production Recommendation**: For robust cross-environment compatibility (especially in VIVERSE iframes), use the [Robust Profile Fetch Pattern](patterns/robust-profile-fetch.md). It implements a multi-strategy fallback approach to ensure you always get the user's data.
-```
+> Use the reusable helper in [patterns/robust-profile-fetch.md](patterns/robust-profile-fetch.md) so every project applies the same fallback order.
 
 ### 3. Login (Redirect-based SSO)
 
@@ -206,7 +237,7 @@ Use this structure to avoid the common auth bugs:
 1.  **Single source of auth state** in `App` (or a single AuthProvider).
 2.  Pass `user/loading/error/login/logout` down to UI components (`AuthGate`, `Lobby`) via props/context.
 3.  Keep VIVERSE SDK calls in a service layer (`ViverseService`), not inside multiple UI components.
-4.  Build profile data with a multi-strategy fetch (Avatar SDK -> `getUserInfo` -> `getUser` -> `getProfileByToken` -> API fallback).
+4.  Build profile data with the canonical multi-strategy fetch (`avatar.getProfile` -> `getUserInfo` -> `getUser` -> `getProfileByToken` -> API fallback).
 
 Minimal component wiring:
 
@@ -228,7 +259,7 @@ function App() {
 
 - Prefer profile fields (`name`, `displayName`, `display_name`, `userName`, `email`) for UI.
 - Treat raw `account_id` as an internal identifier only.
-- If profile is missing, use a generic fallback like `VIVERSE Player`.
+- If profile is missing, use generic fallback `VIVERSE Player` only (never append account fragments).
 - Surface avatar via `headIconUrl`/`activeAvatar.headIconUrl` when available.
 
 ## Verification Checklist
@@ -237,13 +268,14 @@ function App() {
 - profile fetch returns at least one of: display name, email, avatar
 - UI shows profile identity, not raw UUID
 - UI does not show partial UUID/account fragments either (for example `VIVERSE Player ab12cd`)
+- UI fallback name is exactly `VIVERSE Player` when identity is unavailable
 
 ## Critical Gotchas
 
 - **Mock mode for local dev**: The SDK requires HTTPS and a registered redirect URI. For local development, create a mock service that simulates checkAuth/login/logout.
 - **Token expiry**: `expires_in` is in seconds. Refresh the session before it expires for long-running experiences.
 - **Flat namespace**: Some SDK versions don't have a `client` constructor — the namespace itself has methods directly. Handle both cases.
-- **checkAuth ≠ profile**: `checkAuth()` only returns auth tokens, NOT user profile data. You MUST use the Avatar SDK `getProfile()` to get display name and avatar.
+- **checkAuth ≠ profile**: `checkAuth()` only returns auth tokens, NOT user profile data. Use the full fallback chain, not `checkAuth()` fields alone.
 - **Iframe Auth Hang (`checkAuth:ack`)**: If the application hangs on VIVERSE Studio or logs `unhandled methods: VIVERSE_SDK/checkAuth:ack`, it is almost always caused by an **App ID mismatch**. The VIVERSE parent iframe security model prevents the auth handshake if `clientId` (from your `.env` file) does not exactly match the App ID the iframe was launched with. Double check copied `.env` files.
 - **TypeError: Cannot read properties of null (reading 'accountId')**: This occurs when `getProfile()` returns null (often due to App ID mismatch or invalid token) and the code tries to access `profile.accountId` without a check. **Safety Fix**: Always use optional chaining `profile?.accountId` or a null-guard `if (profile)`.
 - **Build-time env trap (Vite/React)**: `import.meta.env.VITE_*` is compiled at build time. If App ID changes, update `.env` and run a fresh `npm run build` before publishing. Re-publishing an old `dist` keeps the old/invalid App ID and causes guest-mode auth.

@@ -1,23 +1,25 @@
-# VIVERSE Hub Resilience Guide (v4.5 - Bridge-First Identity)
+# VIVERSE Hub Resilience Guide (v5.0 - Canonical Auth/Profile)
 
 > [!IMPORTANT]
 > **MANDATORY RELEASE BLOCKER CHECKLIST**
 > Before any VIVERSE publish:
-> 1. [ ] **Bridge-First Identity**: PRIMARY identity MUST be attempt via `client.getUserInfo()` (CORS-safe bridge).
-> 2. [ ] **Avatar SDK Fix**: Constructors MUST NOT include the forbidden `accesstoken` header.
-> 3. [ ] **Session-Matching Alpha**: Local `actor_id` MUST be found by matching `session_id` in the actor list.
-> 4. [ ] **Triple-Lock Auth**: Try `viverse.com` -> 1000ms delay -> Try `htcvive.com`.
-> 5. [ ] **Stability Delay**: 2500ms delay after `checkAuth()` BEFORE any optional profile enhancement.
-> 6. [ ] **Matchmaking v4.2**: `playClient.newMatchmakingClient(appId)` + Manual `session_id`.
-> 7. [ ] **Session-Matching Alpha**: Find local `actor_id` by matching `session_id` in the actor list.
+> 1. [ ] **Auth Domain**: `new vSdk.client({ clientId, domain: "account.htcvive.com" })`.
+> 2. [ ] **Handshake Delay**: wait 1200ms after SDK detection before first `checkAuth()`.
+> 3. [ ] **Canonical Profile Chain**: `avatar.getProfile` -> `getUserInfo` -> `getUser` -> `getProfileByToken` -> direct API fallback.
+> 4. [ ] **Avatar Constructor**: base URL `https://sdk-api.viverse.com/`; provide `accessToken`, `token`, `authorization`.
+> 5. [ ] **CORS Safety**: never use `accesstoken` header/key.
+> 6. [ ] **UI Fallback Safety**: do not derive display names from `account_id` fragments.
+> 7. [ ] **Matchmaking v4.2**: `playClient.newMatchmakingClient(appId)` + manual `session_id`.
+> 8. [ ] **Session Match**: local `actor_id` is resolved by matching `session_id` in actor list.
 
-## 1. AUTH Resilience (Bridge-First Recovery)
+## 1. Auth Resilience (Canonical)
 
-- **Strategy 0 (Instant)**: Extract name/picture from `checkAuth()` result object.
-- **Strategy 2 (Primary Recovery)**: Call `client.getUserInfo()`. This uses the CORS-safe message bridge.
-- **Shotgun Constructor (Fixed)**: Pass token via `token` and `authorization`. DO NOT use `accesstoken`.
-- **Base URL**: Use `https://avatar.viverse.com/` (stable URL).
-- **Identity Delay**: 2500ms delay after login before attempting enhancement calls.
+- `checkAuth()` is token/account only. It is not profile data.
+- Primary profile path: `new vSdk.avatar({ baseURL: "https://sdk-api.viverse.com/", ... }).getProfile()`.
+- Fallback path: `client.getUserInfo()` -> `client.getUser()` -> `client.getProfileByToken(token)`.
+- Last resort only: direct profile API fetch (may be blocked by iframe/CORS policy).
+- Normalize display fields from `displayName/display_name/name/nickname/userName/email`.
+- Avatar normalization should prefer `activeAvatar.headIconUrl` and similar aliases.
 
 ## 2. Matchmaking & Multiplayer (v4.2 Standards)
 
@@ -33,4 +35,4 @@
 - **Traceability**: Log a `VERSION_NAME` (e.g., `1.2.0-zero-fetch`) on startup.
 
 ---
-**Zero-Fetch Alpha is the terminal resilience standard. Deviations will cause DNS/CORS failure.**
+**Canonical rule**: keep one auth/profile recipe across all projects to prevent agent drift and repeated regression loops.

@@ -38,7 +38,7 @@ Always check both:
   - `new vSdk.client({ clientId, domain: "account.htcvive.com" })`
   - `checkAuth()`, `loginWithWorlds()`, `logout()`
 - **Avatar SDK**
-  - `new vSdk.avatar({ accessToken, appId, clientId, baseURL })`
+  - `new vSdk.avatar({ accessToken, token, authorization, appId, clientId, baseURL: "https://sdk-api.viverse.com/" })`
   - `getProfile()`
 - **Matchmaking SDK**
   - `playClient.newMatchmakingClient(appId)`
@@ -53,10 +53,17 @@ Always check both:
 ## Integration Blueprint (Web/React)
 
 1. Authenticate user (`checkAuth`) and keep auth state in one source.
-2. Fetch profile via Avatar SDK with fallback chain.
+2. Fetch profile via canonical fallback chain: `avatar.getProfile` -> `getUserInfo` -> `getUser` -> `getProfileByToken` -> direct API fallback.
 3. Initialize feature clients (matchmaking/leaderboard) after auth.
 4. Build gameplay sync with reconnect-safe room lifecycle.
 5. Publish with App ID/env match and fresh build.
+
+## Canonical Auth/Profile Rules
+
+- `checkAuth()` is not profile data; it only provides auth/session fields.
+- Never send/use header key `accesstoken` in browser calls.
+- Direct browser calls to `account-profile.htcvive.com` or `avatar.viverse.com` can be CORS-blocked in iframe origins.
+- UI fallback display name should be exactly `VIVERSE Player`; do not append account ID fragments.
 
 ## Matchmaking & Play Quick Reference
 
