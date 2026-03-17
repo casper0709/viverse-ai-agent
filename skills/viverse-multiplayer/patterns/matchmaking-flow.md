@@ -8,21 +8,34 @@ End-to-end flow for VIVERSE multiplayer: connect → create/join room → start 
 await initPlayClient();
 await initMatchmakingClient();
 
-// MUST wait for onConnect before setActor
-await new Promise((resolve) => {
-  matchmakingClient.on("onConnect", resolve);
-  matchmakingClient.on("connect", resolve); 
-});
+// Proactive connect first (when SDK exposes it)
+if (typeof matchmakingClient.connect === "function") {
+  await matchmakingClient.connect();
+}
 
-// Proactive connect call (Tank Shooter pattern)
-if (typeof matchmakingClient.connect === 'function') await matchmakingClient.connect();
+// Wait for connect with timeout (do not hang indefinitely)
+const connected = await new Promise((resolve) => {
+  let done = false;
+  const finish = (v) => {
+    if (done) return;
+    done = true;
+    matchmakingClient.off?.("onConnect", onConnect);
+    matchmakingClient.off?.("connect", onConnect);
+    resolve(v);
+  };
+  const onConnect = () => finish(true);
+  matchmakingClient.on("onConnect", onConnect);
+  matchmakingClient.on("connect", onConnect);
+  setTimeout(() => finish(Boolean(matchmakingClient.connected || matchmakingClient.isConnected)), 5000);
+});
+if (!connected) console.warn("Matchmaking connection could not be verified.");
 
 // Generate unique session ID to prevent "undefined" or guest collisions
-const actorSessionId = `${user.account_id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const actorSessionId = `${user.accountId || user.account_id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 await matchmakingClient.setActor({
   session_id: actorSessionId,
-  name: user.displayName,
+  name: user.displayName || user.name || "Player",
   properties: {}
 });
 ```
@@ -93,7 +106,7 @@ matchmakingClient.on("onGameStartNotify", () => {
 After start (both master and non-master):
 ```javascript
 const roomId = room.id || room.game_session;
-const mp = new (v.play?.MultiplayerClient || v.Play?.MultiplayerClient)(roomId, appId, user.account_id);
+const mp = new (v.play?.MultiplayerClient || v.Play?.MultiplayerClient)(roomId, appId, actorSessionId);
 // Register listeners BEFORE init (Play SDK example pattern)
 mp.onConnected(() => console.log("connected"));
 mp.onMessage?.((msg) => console.log("top-level message", msg));
@@ -101,10 +114,7 @@ mp.general?.onMessage?.((msg) => console.log("general message", msg));
 
 await mp.init({
   modules: {
-    game: { enabled: true },
-    networkSync: { enabled: true },
-    actionSync: { enabled: true },
-    leaderboard: { enabled: true }
+    general: { enabled: true }
   }
 });
 ```

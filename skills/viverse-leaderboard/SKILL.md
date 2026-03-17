@@ -123,11 +123,39 @@ let rankings = [];
 for (const conf of configs) {
     const res = await gameDashboardClient.getLeaderboard(appId, conf);
     // Robust Extraction
-    const extracted = res?.rankings || res?.ranking || res?.leaderboard_rankings || res?.data?.rankings || [];
+    const extracted =
+      res?.rankings ||
+      res?.ranking ||
+      res?.leaderboard_rankings ||
+      res?.data?.rankings ||
+      res?.data?.ranking ||
+      res?.leaderboard?.rankings ||
+      res?.leaderboard?.ranking ||
+      [];
     if (extracted.length > 0) {
         rankings = extracted;
         break;
     }
+}
+
+// Optional read fallback for some deployments
+if (rankings.length === 0 && typeof gameDashboardClient.getGuestLeaderboard === "function") {
+  for (const conf of configs) {
+    const res = await gameDashboardClient.getGuestLeaderboard(appId, conf);
+    const extracted =
+      res?.rankings ||
+      res?.ranking ||
+      res?.leaderboard_rankings ||
+      res?.data?.rankings ||
+      res?.data?.ranking ||
+      res?.leaderboard?.rankings ||
+      res?.leaderboard?.ranking ||
+      [];
+    if (extracted.length > 0) {
+      rankings = extracted;
+      break;
+    }
+  }
 }
 ```
 

@@ -35,11 +35,16 @@ Use when a project needs:
 3. App ID from [VIVERSE Studio](https://studio.viverse.com/).
 4. Stable actor identity input (account id + per-connect unique suffix).
 
-2. **MUST** initialize the `MultiplayerClient` with `await mp.init({ modules: { general: { enabled: true } } })`. If this is skipped, `mp.general` will fail.
-3. **MUST** use **Session-Matching Alpha** to find local `actor_id`: Match local `session_id` against the list in `mc.getMyRoomActors()` or `room.actors`.
-4. **MUST NOT** call `mc.getActorId()` (Hallucination - Does not exist).
-5. **MUST** run `setActor` immediately after the matchmaking client connects or joins.
-4. **MUST** use a unique `session_id` for each connect to prevent stale room rebinding.
+## Mandatory Compliance Gates (MUST PASS)
+
+1. **MUST** create matchmaking with `playClient.newMatchmakingClient(appId)` and proactively call `mc.connect()` when available.
+2. **MUST** wait for connect signal (`onConnect`/`connect`) with timeout; do not block forever waiting on events.
+3. **MUST** run `setActor` after connect with a unique per-connect `session_id` (`accountId-timestamp-random`).
+4. **MUST** use **Session-Matching Alpha** to resolve local `actor_id` by matching local `session_id` against `mc.getMyRoomActors()` or `room.actors`.
+5. **MUST** initialize `MultiplayerClient` with `await mp.init({ modules: { general: { enabled: true } } })` before using `mp.general`.
+6. **MUST NOT** call `mc.getActorId()` (non-existent API).
+7. **MUST NOT** depend on `updateRoom(...)` as a portable room-state API; use `setRoomProperties(...)` for room properties.
+8. **MUST** pass a raw room ID string to `joinRoom(...)` (not a room object).
 
 ## Implementation Workflow
 
@@ -63,8 +68,8 @@ const isConnected = await new Promise((resolve) => {
     const done = (val) => { if (!resolved) { resolved = true; resolve(val); } };
     mc.on("onConnect", () => done(true));
     mc.on("connect", () => done(true));
-    if (typeof mc.connect === 'function') mc.connect().catch(() => {});
     setTimeout(() => done(false), 5000); // 5s timeout
+    if (typeof mc.connect === 'function') mc.connect().catch(() => {});
 });
 
 if (!isConnected) console.warn('Matchmaking connection could not be verified, proceeding anyway...');
@@ -73,7 +78,7 @@ if (!isConnected) console.warn('Matchmaking connection could not be verified, pr
 // Use the UNIQUE actorSessionId as the session_id to prevent stale session rebinding
 await mc.setActor({
     session_id: actorSessionId,
-    name: user.displayName || 'Player',
+    name: user.displayName || user.name || 'Player',
     properties: { avatarUrl: user.avatarUrl },
 });
 ```
@@ -225,6 +230,7 @@ For collectible gameplay state (pickups, temporary buffs):
 - Register/start handlers before calling `startGame` to avoid missed events.
 - Use `mp.general.sendMessage(...)` with bound context; avoid detached fn refs.
 - Bridge both `mp.onMessage` and `mp.general.onMessage` in mixed environments.
+- Prefer `setRoomProperties(...)` for room state updates across SDK/runtime variants.
 - Compute and send sync payload before React async state updates.
 - Use room-properties fallback (`setRoomProperties/getAvailableRooms`) when websocket delivery is inconsistent.
 - Host leave order matters: disconnect multiplayer -> close room -> leave room.
