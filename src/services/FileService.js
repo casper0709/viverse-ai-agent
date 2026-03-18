@@ -1,6 +1,8 @@
 import fs from 'fs/promises';
 import path from 'path';
 import logger from '../utils/logger.js';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 
 class FileService {
     constructor() {
@@ -219,6 +221,98 @@ class FileService {
             logger.error(`FileService.addLesson Error: ${error.message}`);
             throw error;
         }
+    }
+
+    _stripAnsi(text = "") {
+        return String(text)
+            .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
+            .replace(/\u001bc/g, '')
+            .replace(/\r/g, '');
+    }
+
+    _parseAppListOutput(rawText = "") {
+        const clean = this._stripAnsi(rawText);
+        const lines = clean.split('\n').map((line) => line.trim());
+        const apps = [];
+
+        for (const line of lines) {
+            if (!line.includes('|')) continue;
+            if (line.startsWith('APP ID')) continue;
+            if (line.startsWith('---')) continue;
+
+            const cols = line.split('|').map((c) => c.trim());
+            if (cols.length < 4) continue;
+
+            const appId = cols[0];
+            const title = cols[1];
+            const state = cols[2];
+            const url = cols[3];
+
+            if (!/^[a-z0-9]{10}$/i.test(appId)) continue;
+            if (!/^https?:\/\//i.test(url)) continue;
+
+            apps.push({
+                appId,
+                title,
+                state,
+                url
+            });
+        }
+
+        return apps;
+    }
+
+    async _execCli(args = [], workspacePath) {
+        const execFileAsync = promisify(execFile);
+        const activeDir = workspacePath || this.baseDir;
+        return execFileAsync('viverse-cli', args, {
+            cwd: activeDir,
+            env: { ...process.env, CI: '1' },
+            timeout: 120000,
+            maxBuffer: 1024 * 1024
+        });
+    }
+
+    async listUserApps(credentials, limit = 50, workspacePath) {
+        if (!credentials?.email || !credentials?.password) {
+            throw new Error('Credentials are required to list account apps');
+        }
+
+        const safeLimit = Math.max(1, Math.min(50, Number(limit) || 50));
+
+        // Always reset auth context first to avoid cross-account leakage.
+        try {
+            await this._execCli(['auth', 'logout'], workspacePath);
+        } catch (_) {
+            // Ignore logout failures (already logged out, etc.)
+        }
+
+        try {
+            logger.info(`Authenticating viverse-cli for app listing: ${credentials.email}`);
+            await this._execCli(['auth', 'login', '-e', credentials.email, '-p', credentials.password], workspacePath);
+        } catch (error) {
+            logger.error(`viverse-cli login failed for app listing: ${error.message}`);
+            throw new Error('Authentication failed. Please verify your VIVERSE credentials.');
+        }
+
+        let combinedOutput = '';
+        try {
+            const { stdout, stderr } = await this._execCli(['app', 'list', '--limit', String(safeLimit)], workspacePath);
+            combinedOutput = `${stdout || ''}\n${stderr || ''}`;
+        } catch (error) {
+            const stdout = error.stdout || '';
+            const stderr = error.stderr || '';
+            combinedOutput = `${stdout}\n${stderr}`;
+            if (!combinedOutput.trim()) {
+                throw new Error(`Failed to list apps: ${error.message}`);
+            }
+        }
+
+        const apps = this._parseAppListOutput(combinedOutput);
+        return {
+            apps,
+            latest: apps[0] || null
+        };
     }
 }
 

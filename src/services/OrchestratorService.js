@@ -10,6 +10,46 @@ class OrchestratorService {
         this.activeProjects = new Map();
     }
 
+    _extractAppIdCandidates(text = "") {
+        const matches = String(text).match(/\b[a-z0-9]{10}\b/gi) || [];
+        return [...new Set(matches.map(m => m.toLowerCase()))];
+    }
+
+    async _pickWorkspace(workSpaceDir, { appIds = [], preferredWorkspace = null } = {}) {
+        const files = await fs.readdir(workSpaceDir, { withFileTypes: true });
+        const dirs = files
+            .filter(f => f.isDirectory() && f.name.startsWith('req_'))
+            .map(f => f.name)
+            .sort((a, b) => b.localeCompare(a));
+
+        let best = null;
+        for (const name of dirs) {
+            const candidate = path.join(workSpaceDir, name);
+            const statePath = path.join(candidate, '.agent_state.json');
+            try {
+                const content = await fs.readFile(statePath, 'utf8');
+                const parsed = JSON.parse(content);
+                const summary = String(parsed?.projectContextSummary || "");
+                let score = 0;
+
+                if (preferredWorkspace && preferredWorkspace === candidate) score += 1000;
+                for (const id of appIds) {
+                    if (summary.includes(id)) score += 200;
+                }
+                if (Array.isArray(parsed?.tasks) && parsed.tasks.some(t => t.status === 'pending')) score += 20;
+                if ((await fs.stat(candidate).catch(() => null))?.isDirectory()) score += 1;
+
+                if (!best || score > best.score) {
+                    best = { path: candidate, state: parsed, score };
+                }
+            } catch (_) {
+                // ignore invalid workspace
+            }
+        }
+
+        return best;
+    }
+
     async *processRequest(message, history = [], credentials = null) {
         logger.info(`Orchestrator: Processing request: ${message}`);
         
@@ -23,29 +63,20 @@ class OrchestratorService {
         let state;
         let plan;
 
-        // PRE-SCAN: Always check for recent workspace if it's not a resume command,
-        // we might still want to resume if the intent classifier says isNewProject: false
+        const appIdsFromMsg = this._extractAppIdCandidates(message);
+        const appIdsFromHistory = this._extractAppIdCandidates(JSON.stringify(history || []));
+        const appIds = [...new Set([...appIdsFromMsg, ...appIdsFromHistory])];
+        const userKey = credentials?.email ? String(credentials.email).toLowerCase() : "";
+        const preferredWorkspace = userKey ? this.activeProjects.get(userKey) : null;
+
+        // PRE-SCAN: choose best workspace candidate instead of blindly picking latest.
         try {
-            const files = await fs.readdir(workSpaceDir, { withFileTypes: true });
-            const dirs = files.filter(f => f.isDirectory() && f.name.startsWith('req_'))
-                              .map(f => f.name)
-                              .sort((a, b) => b.localeCompare(a));
-            
-            if (dirs.length > 0) {
-                const latestDir = path.join(workSpaceDir, dirs[0]);
-                try {
-                    const stateContent = await fs.readFile(path.join(latestDir, '.agent_state.json'), 'utf8');
-                    const latestState = JSON.parse(stateContent);
-                    
-                    if (isResumeCommand) {
-                        workspacePath = latestDir;
-                        state = latestState;
-                        yield { type: 'status', content: sanitizer.sanitize(`Resuming work in existing sandbox: ${workspacePath}`, credentials) };
-                        yield { type: 'status', content: sanitizer.sanitize(`Current Task: ${state.tasks.find(t => t.status === 'pending')?.prompt.substring(0, 50) || "none"}...`, credentials) };
-                    }
-                } catch (e) {
-                    logger.debug("No valid state found in latest workspace.");
-                }
+            const best = await this._pickWorkspace(workSpaceDir, { appIds, preferredWorkspace });
+            if (best && isResumeCommand) {
+                workspacePath = best.path;
+                state = best.state;
+                yield { type: 'status', content: sanitizer.sanitize(`Resuming work in existing sandbox: ${workspacePath}`, credentials) };
+                yield { type: 'status', content: sanitizer.sanitize(`Current Task: ${state.tasks.find(t => t.status === 'pending')?.prompt.substring(0, 50) || "none"}...`, credentials) };
             }
         } catch (e) {
             logger.debug("No workspaces found.");
@@ -100,15 +131,11 @@ class OrchestratorService {
             // Step 2: Workspace Selection & State Restoration for Follow-ups
             if (plan.isNewProject === false) {
                 try {
-                    const files = await fs.readdir(workSpaceDir, { withFileTypes: true });
-                    const dirs = files.filter(f => f.isDirectory() && f.name.startsWith('req_'))
-                                      .map(f => f.name)
-                                      .sort((a, b) => b.localeCompare(a));
-                    if (dirs.length > 0) {
-                        workspacePath = path.join(workSpaceDir, dirs[0]);
-                        const stateContent = await fs.readFile(path.join(workspacePath, '.agent_state.json'), 'utf8');
-                        const oldState = JSON.parse(stateContent);
-                        
+                    const best = await this._pickWorkspace(workSpaceDir, { appIds, preferredWorkspace });
+                    if (best) {
+                        workspacePath = best.path;
+                        const oldState = best.state;
+
                         // RESTORE but UPDATE: Keep the workspace and context, but use the NEW tasks
                         state = {
                             ...oldState,
@@ -120,6 +147,7 @@ class OrchestratorService {
                         state.projectContextSummary += `\n\nFOLLOW-UP REQUEST: "${message}"\nNew tasks scheduled for improvement...`;
                         
                         yield { type: 'status', content: sanitizer.sanitize(`Resuming work for iterative improvement in: ${workspacePath}`, credentials) };
+                        if (userKey) this.activeProjects.set(userKey, workspacePath);
                     }
                 } catch (e) {
                     logger.warn("Could not restore previous state for follow-up. Falling back to new workspace.");
@@ -141,6 +169,7 @@ class OrchestratorService {
                     history: [],
                     projectContextSummary: `ORIGINAL USER PROJECT REQUEST: "${message}"\n\nProject Initialization started.`
                 };
+                if (userKey) this.activeProjects.set(userKey, workspacePath);
             }
         }
 
@@ -156,6 +185,7 @@ class OrchestratorService {
             projectContextSummary += `\nUSER VIVERSE CREDENTIALS FOR PUBLISHING:\nEmail: ${credentials.email}\nPassword: ${credentials.password}`;
         }
         state.projectContextSummary = projectContextSummary;
+        if (userKey && state.workspacePath) this.activeProjects.set(userKey, state.workspacePath);
         await this._saveState(state);
 
         // Step 3: Execution Loop

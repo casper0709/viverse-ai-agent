@@ -60,11 +60,11 @@ document.addEventListener('DOMContentLoaded', () => {
         userInput.value = '';
         userInput.style.height = 'auto';
 
-        document.body.classList.add('is-processing');
         showTypingIndicator();
+        let localHeartbeat = null;
 
         try {
-            const payload = { message, history: chatHistory };
+            const payload = { message: actualMessage, history: chatHistory };
             if (savedCredentials) {
                 payload.credentials = savedCredentials;
             }
@@ -75,9 +75,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 body: JSON.stringify(payload)
             });
 
-            removeTypingIndicator();
-
             if (!response.ok) {
+                removeTypingIndicator();
                 appendMessage('system', `Error: ${response.statusText}`);
                 return;
             }
@@ -89,6 +88,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Container for status logs (collapsible or scrollable)
             const statusContainer = document.createElement('div');
             statusContainer.className = 'status-logs';
+            statusContainer.innerHTML = '<div class="status-line"><span class="status-icon">⏳</span> Thinking...</div>';
             
             // Container for final text
             const textContainer = document.createElement('div');
@@ -99,6 +99,17 @@ document.addEventListener('DOMContentLoaded', () => {
             chatMessages.appendChild(bubble);
 
             let accumulatedText = "";
+            let receivedFirstChunk = false;
+            let localHeartbeatCount = 0;
+            localHeartbeat = setInterval(() => {
+                localHeartbeatCount += 1;
+                const waitLine = document.createElement('div');
+                waitLine.className = 'status-line';
+                waitLine.innerHTML = `<span class="status-icon">⏱️</span> Still working... (${localHeartbeatCount * 8}s)`;
+                statusContainer.appendChild(waitLine);
+                statusContainer.scrollTop = statusContainer.scrollHeight;
+                scrollToBottom();
+            }, 8000);
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder('utf-8');
@@ -112,6 +123,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 for (const line of lines) {
                     if (line.startsWith('data: ')) {
+                        if (!receivedFirstChunk) {
+                            receivedFirstChunk = true;
+                            removeTypingIndicator();
+                        }
                         const dataStr = line.substring(6).trim();
                         if (dataStr === '[DONE]') continue;
                         
@@ -136,7 +151,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 errorLine.innerHTML = `⚠️ Error: ${parsed.content}`;
                                 statusContainer.appendChild(errorLine);
                             } else if (parsed.type === 'action' && parsed.action === 'require_credentials') {
-                                pendingMessage = message; // Store intent for auto-continue
+                                pendingMessage = actualMessage; // Store intent for auto-continue
                                 const accountPanel = document.querySelector('.account-panel');
                                 accountPanel.classList.add('visible');
                                 accountPanel.classList.remove('highlight');
@@ -154,14 +169,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
+            clearInterval(localHeartbeat);
             bubble.classList.remove('streaming');
-            document.body.classList.remove('is-processing');
+            removeTypingIndicator();
             chatHistory.push({ role: 'user', content: actualMessage });
             chatHistory.push({ role: 'assistant', content: accumulatedText });
 
         } catch (error) {
             removeTypingIndicator();
-            document.body.classList.remove('is-processing');
+            if (localHeartbeat) clearInterval(localHeartbeat);
             appendMessage('system', 'Connection error: ' + error.message);
         }
     }

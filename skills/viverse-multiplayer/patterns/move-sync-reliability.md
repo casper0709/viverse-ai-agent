@@ -8,6 +8,17 @@ When White moved in one session, Black's session sometimes stayed at the startin
 
 ## Root Causes & Fixes
 
+### 0. Creator-Only Room Property Writes (Critical)
+
+**Problem**: Non-creator trying to write room properties causes runtime errors such as:
+`Only room creator can set room properties`.
+This creates reset loops where joiner moves appear briefly then revert.
+
+**Fix**: Host/creator is sole writer for gameplay-critical room state.
+- Joiner sends intent/snapshot over realtime (`general.sendMessage`).
+- Host validates, applies, and writes canonical `gameState` via `setRoomProperties`.
+- Never let joiner fallback to direct room-property write for turn state.
+
 ### 1. Compute State and Send Before `setState` (Critical)
 
 **Problem**: Computing the FEN inside a React `setState` updater and then calling `sendMessage` after `setState` can result in **no message being sent**. React may run the updater asynchronously, so the FEN variable is often still `null` when checked.
@@ -96,6 +107,20 @@ await mp.init({ modules: { general: { enabled: true } } });
 ### 6. roomId Consistency
 
 Both creator and joiner must use the same `roomId`. Use `room.id || room.game_session` — these are typically equal from the matchmaking API.
+
+### 7. Atomic Turn Commit (No Split Writes)
+
+**Problem**: Writing `phase='DRAW'` first and writing final state later can desync under packet delay/retry.
+
+**Fix**: Resolve play + draw + next-turn/winner in one state object, then publish once.
+
+```javascript
+const next = cloneState(gameState);
+applyPlay(next);
+applyDraw(next);
+resolveTurnOrWinner(next);
+await publishCanonicalState(next); // single authoritative write
+```
 
 ## Message Types Summary
 

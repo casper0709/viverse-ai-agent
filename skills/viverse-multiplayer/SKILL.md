@@ -45,6 +45,10 @@ Use when a project needs:
 6. **MUST NOT** call `mc.getActorId()` (non-existent API).
 7. **MUST NOT** depend on `updateRoom(...)` as a portable room-state API; use `setRoomProperties(...)` for room properties.
 8. **MUST** pass a raw room ID string to `joinRoom(...)` (not a room object).
+9. **MUST** treat room properties as **host/creator-authoritative** for gameplay-critical state (`gameState`, `turn`, `phase`, scores).
+10. **MUST NOT** let non-host clients call `setRoomProperties(...)` / `updateRoom(...)` for gameplay-critical fields.
+11. **MUST** have non-host clients send move intents/snapshots via `MultiplayerClient.general.sendMessage(...)`, then host applies and publishes canonical state.
+12. **MUST** commit one complete turn as **one authoritative state write** (no split write like PLAY then delayed DRAW write).
 
 ## Implementation Workflow
 
@@ -148,6 +152,19 @@ mp.general.onMessage((raw) => {
 
 For turn-based games, send full state snapshots (for example FEN), not deltas.
 
+For host-authoritative games:
+
+```javascript
+// joiner/non-host
+mp.general.sendMessage(JSON.stringify({
+  type: "STATE_SYNC",
+  id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  gameState: nextState
+}));
+
+// host receives, validates, applies, then setRoomProperties({ gameState })
+```
+
 ### Protocol evolution checklist (required)
 
 When adding a new gameplay message type (for example `WEAPON`, `POWERUP`):
@@ -232,7 +249,8 @@ For collectible gameplay state (pickups, temporary buffs):
 - Bridge both `mp.onMessage` and `mp.general.onMessage` in mixed environments.
 - Prefer `setRoomProperties(...)` for room state updates across SDK/runtime variants.
 - Compute and send sync payload before React async state updates.
-- Use room-properties fallback (`setRoomProperties/getAvailableRooms`) when websocket delivery is inconsistent.
+- Do not use non-host room-properties fallback for gameplay-critical state; route through host relay.
+- Avoid multi-step turn commits that write partial intermediate states; publish one canonical post-turn snapshot.
 - Host leave order matters: disconnect multiplayer -> close room -> leave room.
 - Reuse of fixed session id can cause stale room rebinding; use fresh per-connect id.
 - Adding send handlers without updating parser allowlist causes silent message loss in production.

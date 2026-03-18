@@ -613,16 +613,14 @@ body {
     height: 100%;
     background: rgba(10, 12, 16, 0.7);
     backdrop-filter: blur(8px);
-    display: none;
+    display: none !important;
     justify-content: center;
     align-items: center;
     z-index: 2000;
     animation: fadeIn 0.3s ease-out;
 }
 
-.is-processing .waiting-overlay {
-    display: flex;
-}
+/* Overlay is intentionally disabled; progress is shown inline in chat status logs. */
 
 .waiting-content {
     background: var(--sidebar-bg);

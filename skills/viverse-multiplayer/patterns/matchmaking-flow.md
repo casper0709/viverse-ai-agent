@@ -82,12 +82,16 @@ const { rooms } = await matchmakingClient.getAvailableRooms();
 
 Listen for actor changes:
 ```javascript
-matchmakingClient.on("onRoomActorChange", (actors) => {
+matchmakingClient.on("onRoomActorChange", (payload) => {
+  const actors = Array.isArray(payload) ? payload : (payload?.actors || []);
   if (actors.length >= 2 && amMaster) {
     // Show "Start Game" button
   }
 });
 ```
+
+Note: some SDK variants send `onJoinRoom` / `onRoomUpdate` as `{ room: {...} }` wrappers.
+Always normalize with `const room = data?.room || data`.
 
 Master starts:
 ```javascript
