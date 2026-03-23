@@ -25,11 +25,16 @@ Use this when a project needs:
 
 These are release blockers for any publishing task:
 
-1. **MUST** verify App ID bundling: After `npm run build`, you **MUST** run a `grep` command to confirm the target App ID is actually present in the `dist/` JS assets. 
-   - Example: `grep -r "YOUR_APP_ID" dist/`
-2. **MUST** use a **Hardcoded Fallback**: In the source code (e.g., `ViverseContext.tsx`), you **MUST** provide the App ID as a hardcoded fallback to the environment variable. 
-   - Example: `const APP_ID = import.meta.env.VITE_VIVERSE_CLIENT_ID || 'f9czvjes3f';`
-3. **MUST** perform a fresh build before every `viverse-cli app publish` if `.env` or App ID configuration changed.
+1. **MUST** maintain a single App ID authority per run (the target App ID) and keep it consistent across:
+   - `.env` (`VITE_VIVERSE_CLIENT_ID`)
+   - source/config fallback path
+   - built `dist/` assets
+2. **MUST** verify App ID propagation after every build:
+   - Run one deterministic check that the expected App ID appears in `dist/`.
+   - If the check fails, fix root cause (`.env`, source wiring, stale build) before any retry.
+3. **MUST NOT** perform repeated equivalent grep checks without state change.
+   - Retrying the same command with unchanged files/build output is invalid.
+4. **MUST** perform a fresh build before `viverse-cli app publish` if `.env` or App ID-related source changed.
 
 ## CLI Workflow
 
@@ -84,6 +89,7 @@ viverse-cli app publish ./dist --auto-create-app --name "<APP_NAME>" --type worl
 
 - `import.meta.env` is build-time in Vite; rebuild after env changes.
 - Publishing to app A with build configured for app B can break auth and leaderboard.
+- A hardcoded fallback ID is only acceptable if it matches the same authoritative App ID and is intentional for resilience; mismatched fallback IDs are release blockers.
 - Asset paths must be deployment-safe (relative/public).
 - Review state in Studio may block full live rollout after upload.
 - After publish, browser/app cache can still run old bundle hash; hard refresh or add temporary build-tag log for verification during hotfix debugging.

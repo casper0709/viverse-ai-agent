@@ -7,14 +7,32 @@ import path from 'path';
 import crypto from 'crypto';
 
 const APP_HISTORY_FILE = path.resolve(process.cwd(), '.viverse_app_history.json');
+const MAX_ATTACHMENTS = 4;
+const MAX_ATTACHMENT_SIZE_BYTES = 12 * 1024 * 1024;
+const MAX_TOTAL_ATTACHMENTS_BYTES = 48 * 1024 * 1024;
+const EXTRA_DOC_MIME_TYPES = new Set([
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'text/plain',
+    'text/markdown',
+    'application/json',
+    'text/csv'
+]);
+
+const isExecutionIntent = (message = '') => {
+    const text = String(message || '').toLowerCase();
+    return /(resume|continue|proceed|fix|debug|error|bug|issue|retest|test|build|publish|run|orchestrator|req_\d+)/.test(text);
+};
 
 const isLatestAppQuery = (message = '') => {
-    const text = String(message).toLowerCase();
+    const text = String(message || '').toLowerCase().trim();
+    if (!text) return false;
+    if (isExecutionIntent(text)) return false;
     return (
-        (text.includes('latest') && text.includes('app') && text.includes('id')) ||
-        (text.includes('show') && text.includes('app id')) ||
-        (text.includes('list') && text.includes('app id')) ||
-        (text.includes('latest apps app id'))
+        /\b(show|list|get)\s+(my\s+)?(latest\s+)?app ids?\b/.test(text) ||
+        /\blatest\s+app\s+id\b/.test(text) ||
+        /\bother\s+recent\s+app\s+ids?\b/.test(text)
     );
 };
 
@@ -48,22 +66,80 @@ const upsertUserAppHistory = async (email, apps = []) => {
     await fs.writeFile(APP_HISTORY_FILE, JSON.stringify(existing, null, 2), 'utf8');
 };
 
+const normalizeAttachments = (items = []) => {
+    if (!Array.isArray(items)) return [];
+    let totalBytes = 0;
+    return items
+        .slice(0, MAX_ATTACHMENTS)
+        .map((item) => {
+            const mimeType = String(item?.mimeType || item?.type || '').toLowerCase().trim();
+            const dataBase64 = typeof item?.dataBase64 === 'string' ? item.dataBase64.trim() : '';
+            if (!mimeType || !dataBase64) return null;
+            const isMedia = mimeType.startsWith('image/') || mimeType.startsWith('video/');
+            const isDoc = EXTRA_DOC_MIME_TYPES.has(mimeType);
+            if (!isMedia && !isDoc) return null;
+
+            const bytes = Math.floor((dataBase64.length * 3) / 4);
+            if (bytes > MAX_ATTACHMENT_SIZE_BYTES) {
+                throw new Error(`Attachment too large: ${item?.name || 'file'} (${Math.round(bytes / (1024 * 1024))}MB)`);
+            }
+            totalBytes += bytes;
+            if (totalBytes > MAX_TOTAL_ATTACHMENTS_BYTES) {
+                throw new Error(`Attachments total size exceeded (${Math.round(totalBytes / (1024 * 1024))}MB). Max total is ${Math.round(MAX_TOTAL_ATTACHMENTS_BYTES / (1024 * 1024))}MB.`);
+            }
+
+            return {
+                name: item?.name || 'attachment',
+                mimeType,
+                dataBase64
+            };
+        })
+        .filter(Boolean);
+};
+
+const buildAttachmentSummary = (attachments = []) => {
+    if (!attachments.length) return '';
+    const lines = attachments.map((a, idx) => `- ${idx + 1}. ${a.name} (${a.mimeType})`);
+    return `\n\nAttached files:\n${lines.join('\n')}\nUse attached media/spec context when answering.`;
+};
+
+const isAttachmentValidationError = (message = '') => {
+    const m = String(message || '').toLowerCase();
+    return (
+        m.includes('attachment too large') ||
+        m.includes('attachments total size exceeded') ||
+        m.includes('unsupported attachment') ||
+        m.includes('invalid attachment') ||
+        m.includes('malformed attachment')
+    );
+};
+
 export const chat = async (req, res) => {
+    let heartbeatTimer = null;
+    const stopHeartbeat = () => {
+        if (heartbeatTimer) {
+            clearInterval(heartbeatTimer);
+            heartbeatTimer = null;
+        }
+    };
+
     try {
-        const { message, history, stream, credentials } = req.body;
+        const { message, history, stream, credentials, attachments } = req.body;
+        const media = normalizeAttachments(attachments || []);
 
         if (!message) {
             return res.status(400).json({ error: 'Message is required' });
         }
 
         // If streaming is requested (Dashboard uses streaming)
-        if (stream || true) { // Force streaming for orchestrator
+        const useStream = stream !== false;
+        if (useStream) {
             res.setHeader('Content-Type', 'text/event-stream');
             res.setHeader('Cache-Control', 'no-cache');
             res.setHeader('Connection', 'keep-alive');
 
             let lastActivityAt = Date.now();
-            const heartbeatTimer = setInterval(() => {
+            heartbeatTimer = setInterval(() => {
                 if (res.writableEnded || res.destroyed) return;
                 const idleSec = Math.floor((Date.now() - lastActivityAt) / 1000);
                 let content = 'Agent is still working...';
@@ -71,10 +147,6 @@ export const chat = async (req, res) => {
                 if (idleSec >= 180) content = `Long-running task in progress (${idleSec}s). I will continue and report if stalled.`;
                 res.write(`data: ${JSON.stringify({ type: 'status', content })}\n\n`);
             }, 8000);
-
-            const streamDone = () => {
-                clearInterval(heartbeatTimer);
-            };
 
             if (isLatestAppQuery(message)) {
                 if (!credentials?.email || !credentials?.password) {
@@ -84,7 +156,7 @@ export const chat = async (req, res) => {
                         content: 'I need your VIVERSE account credentials to verify and list only your own app IDs.'
                     })}\n\n`);
                     res.write('data: [DONE]\n\n');
-                    streamDone();
+                    stopHeartbeat();
                     return res.end();
                 }
 
@@ -100,7 +172,7 @@ export const chat = async (req, res) => {
                         content: `No apps found for ${maskEmail(credentials.email)}.`
                     })}\n\n`);
                     res.write('data: [DONE]\n\n');
-                    streamDone();
+                    stopHeartbeat();
                     return res.end();
                 }
 
@@ -121,7 +193,7 @@ export const chat = async (req, res) => {
 
                 res.write(`data: ${JSON.stringify({ type: 'text', content: lines.join('\n') })}\n\n`);
                 res.write('data: [DONE]\n\n');
-                streamDone();
+                stopHeartbeat();
                 return res.end();
             }
 
@@ -130,6 +202,7 @@ export const chat = async (req, res) => {
             'PROJECT': requesting to build, code, create, publish, modify, FIX BUGS, DEBUG, or ANALYZE ERROR LOGS. Also includes CONTINUATION commands like 'proceed', 'continue', 'ok', or 'next' if they relate to an ongoing project.
             'GENERAL': asking general questions, greeting, or chatting naturally.
             User Message: "${message}"
+            Attached media count: ${media.length}
             Reply strictly with 'PROJECT' or 'GENERAL'.`;
             const intentText = await geminiService.generateResponse(intentPrompt, history || []);
             const isGeneral = intentText.includes('GENERAL');
@@ -137,9 +210,10 @@ export const chat = async (req, res) => {
             let responseStream;
             if (isGeneral) {
                 res.write(`data: ${JSON.stringify({ type: 'status', content: 'Answering general question...' })}\n\n`);
-                responseStream = geminiService.generateResponseStream(message, history || [], "ORCHESTRATOR");
+                responseStream = geminiService.generateResponseStream(message, history || [], "ORCHESTRATOR", null, media);
             } else {
-                responseStream = orchestratorService.processRequest(message, history || [], credentials);
+                const enrichedMessage = `${message}${buildAttachmentSummary(media)}`;
+                responseStream = orchestratorService.processRequest(enrichedMessage, history || [], credentials, media);
             }
 
             for await (const chunk of responseStream) {
@@ -148,11 +222,11 @@ export const chat = async (req, res) => {
             }
 
             res.write('data: [DONE]\n\n');
-            streamDone();
+            stopHeartbeat();
             return res.end();
         }
 
-        const response = await geminiService.generateResponse(message, history || []);
+        const response = await geminiService.generateResponse(message, history || [], "ORCHESTRATOR", null, media);
 
         res.status(200).json({
             success: true,
@@ -160,18 +234,35 @@ export const chat = async (req, res) => {
             response: response
         });
     } catch (error) {
-
+        stopHeartbeat();
         logger.error(`AI Controller Error: ${error.message}`);
+        const msg = String(error?.message || '');
+        const isAttachmentError = isAttachmentValidationError(msg);
+        const isRateLimit = msg.includes('429') || msg.toLowerCase().includes('quota exceeded') || msg.toLowerCase().includes('too many requests');
+        const retryHint = msg.match(/retry in\s+([0-9]+(?:\.[0-9]+)?)s?/i);
+        const waitText = retryHint ? ` Please retry in about ${Math.ceil(Number(retryHint[1]))} seconds.` : '';
+        const friendlyAttachmentError = msg || 'Invalid attachments payload.';
         
         if (!res.headersSent) {
-            res.status(500).json({
+            res.status(isAttachmentError ? 400 : 500).json({
                 success: false,
-                error: 'An error occurred while processing your request'
+                error: isAttachmentError
+                    ? friendlyAttachmentError
+                    : isRateLimit
+                    ? `Gemini API quota/rate limit reached.${waitText}`
+                    : 'An error occurred while processing your request'
             });
         } else {
-            res.write(`data: ${JSON.stringify({ type: 'error', content: error.message })}\n\n`);
+            const content = isAttachmentError
+                ? friendlyAttachmentError
+                : isRateLimit
+                ? `Gemini API quota/rate limit reached.${waitText}`
+                : error.message;
+            res.write(`data: ${JSON.stringify({ type: 'error', content })}\n\n`);
             res.end();
         }
+    } finally {
+        stopHeartbeat();
     }
 };
 

@@ -1,0 +1,85 @@
+{
+  "rules": [
+    {
+      "id": "mp-new-matchmaking-client",
+      "profiles": ["multiplayer"],
+      "phases": ["gameplay", "fix"],
+      "type": "required_any",
+      "pattern": "newMatchmakingClient\\s*\\(",
+      "message": "Matchmaking must be initialized via playClient.newMatchmakingClient(appId).",
+      "severity": "high"
+    },
+    {
+      "id": "mp-setactor-after-connect",
+      "profiles": ["multiplayer"],
+      "phases": ["gameplay", "fix"],
+      "type": "required_any",
+      "pattern": "setActor\\s*\\(",
+      "message": "Matchmaking flow must set actor session info via setActor().",
+      "severity": "high"
+    },
+    {
+      "id": "mp-connect-signal-or-connect-call",
+      "profiles": ["multiplayer"],
+      "phases": ["gameplay", "fix"],
+      "type": "required_any",
+      "pattern": "connect\\s*\\(|onConnect|on\\s*\\(\\s*['\\\"]onConnect['\\\"]",
+      "message": "Matchmaking flow should explicitly connect or handle connect signal.",
+      "severity": "medium"
+    },
+    {
+      "id": "mp-host-create-room",
+      "profiles": ["multiplayer"],
+      "phases": ["gameplay", "fix"],
+      "type": "required_any",
+      "pattern": "createRoom\\s*\\(",
+      "message": "Host room lifecycle must include room creation logic.",
+      "severity": "high"
+    },
+    {
+      "id": "mp-host-attach-after-create",
+      "profiles": ["multiplayer"],
+      "phases": ["gameplay", "fix"],
+      "type": "required_any",
+      "pattern": "joinRoom\\s*\\(|getMyRoomActors\\s*\\(|session_id\\s*===\\s*actorSessionId",
+      "message": "After room creation, host attach/verification path is required (joinRoom or verified actor binding).",
+      "severity": "high"
+    },
+    {
+      "id": "mp-room-discovery-before-join",
+      "profiles": ["multiplayer"],
+      "phases": ["gameplay", "fix"],
+      "type": "required_any",
+      "pattern": "getAvailableRooms\\s*\\(|getRooms\\s*\\(",
+      "message": "Matchmaking must discover rooms before deciding join/create.",
+      "severity": "high"
+    },
+    {
+      "id": "mp-forbid-synthetic-roomid-join",
+      "profiles": ["multiplayer"],
+      "phases": ["gameplay", "fix"],
+      "type": "forbidden_any",
+      "pattern": "joinRoom\\s*\\(\\s*ROOM_ID\\s*\\)",
+      "message": "Do not join using synthetic room key directly; resolve real roomId first.",
+      "severity": "high"
+    },
+    {
+      "id": "mp-host-actor-binding-verification",
+      "profiles": ["multiplayer"],
+      "phases": ["gameplay", "fix"],
+      "type": "required_any",
+      "pattern": "session_id\\s*===\\s*actorSessionId|session_id\\s*===\\s*sessionIdRef\\.current|properties\\?\\.sessionId\\s*===\\s*sessionIdRef\\.current|Creator not attached|getMyRoomActors|getActorList\\s*\\(",
+      "message": "Host actor binding verification/retry is missing.",
+      "severity": "high"
+    },
+    {
+      "id": "mp-rooms-api-compat",
+      "profiles": ["multiplayer"],
+      "phases": ["gameplay", "fix"],
+      "type": "required_any",
+      "pattern": "getRooms\\s*\\(|getAvailableRooms\\s*\\(|joinRoom\\s*\\(",
+      "message": "Room access compatibility path is missing (room list API or direct room join).",
+      "severity": "medium"
+    }
+  ]
+}

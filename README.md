@@ -47,7 +47,9 @@ For the full catalog and structure, see `skills/README.md`.
 ### Prerequisites
 
 - Node.js (v18+)
-- Google Gemini API Key
+- Google Gemini credentials (one of):
+  - API key (`GOOGLE_API_KEY`)
+  - Service account private-key credentials (`GOOGLE_SERVICE_ACCOUNT_JSON`, or `GOOGLE_CLIENT_EMAIL` + `GOOGLE_PRIVATE_KEY`)
 
 ### Installation
 
@@ -59,7 +61,15 @@ For the full catalog and structure, see `skills/README.md`.
 3. Create a `.env` file in the root directory:
    ```env
    PORT=3000
+   # Option A: Gemini API key (existing mode)
    GOOGLE_API_KEY=your_gemini_api_key_here
+
+   # Option B: Service account private-key mode (new)
+   # GOOGLE_SERVICE_ACCOUNT_JSON='{"client_email":"...","private_key":"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"}'
+   # or:
+   # GOOGLE_CLIENT_EMAIL=service-account@project.iam.gserviceaccount.com
+   # GOOGLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+
    VIVERSE_AGENT_ENDPOINT=http://localhost:3000/api/ai/chat
    API_HUB_BASE_URL=https://api.viverse.com
    ```

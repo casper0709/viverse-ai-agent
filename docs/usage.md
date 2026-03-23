@@ -7,7 +7,9 @@ Use this guide to run the local agent server and send tasks to it.
 ### Prerequisites
 
 - Node.js installed
-- `GOOGLE_API_KEY` configured in `.env`
+- Gemini credentials configured in `.env`:
+  - API key mode: `GOOGLE_API_KEY`
+  - Private-key mode: `GOOGLE_SERVICE_ACCOUNT_JSON` or `GOOGLE_CLIENT_EMAIL` + `GOOGLE_PRIVATE_KEY`
 
 ### Start server
 

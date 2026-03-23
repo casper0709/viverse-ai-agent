@@ -69,6 +69,21 @@ if (existingRoom) {
   // HOST AUTO-JOIN: Ensures creator is bound to the room session
   const roomId = room?.id || room?.roomId;
   if (roomId) await matchmakingClient.joinRoom(roomId);
+
+  // CRITICAL: some SDK/runtime variants still fail to attach creator actor immediately.
+  // Verify by session_id and self-heal with setActor + rejoin retries.
+  let attached = false;
+  for (let i = 0; i < 6; i++) {
+    const actors = await matchmakingClient.getMyRoomActors?.().catch(() => []) || room?.actors || [];
+    if (actors.some((a) => a.session_id === mySessionId)) {
+      attached = true;
+      break;
+    }
+    await matchmakingClient.setActor?.({ session_id: mySessionId, name: displayName || "Player", properties: {} }).catch(() => {});
+    if (roomId) await matchmakingClient.joinRoom(roomId).catch(() => {});
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  if (!attached) throw new Error("Creator actor not attached after create/join retries");
 }
 ```
 

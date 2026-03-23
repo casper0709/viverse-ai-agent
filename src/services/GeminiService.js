@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { JWT } from 'google-auth-library';
 import fs from 'fs';
 import path from 'path';
 import logger from '../utils/logger.js';
@@ -50,13 +51,289 @@ global.fetch = async (...args) => {
 };
 // -------------------------------------
 
+function _extractTextFromCandidates(candidates = []) {
+    if (!Array.isArray(candidates)) return '';
+    let out = '';
+    for (const c of candidates) {
+        const parts = c?.content?.parts || [];
+        for (const p of parts) {
+            if (typeof p?.text === 'string') out += p.text;
+        }
+    }
+    return out;
+}
+
+function _extractFunctionCalls(candidates = []) {
+    if (!Array.isArray(candidates)) return null;
+    const calls = [];
+    for (const c of candidates) {
+        const parts = c?.content?.parts || [];
+        for (const p of parts) {
+            const call = p?.functionCall || p?.function_call;
+            if (call) calls.push(call);
+        }
+    }
+    return calls.length ? calls : null;
+}
+
+function _decorateGeminiResponse(raw = {}) {
+    const candidates = Array.isArray(raw?.candidates) ? raw.candidates : [];
+    return {
+        ...raw,
+        candidates,
+        text() {
+            return _extractTextFromCandidates(candidates);
+        },
+        functionCalls() {
+            return _extractFunctionCalls(candidates);
+        }
+    };
+}
+
+class OAuthGeminiTransport {
+    constructor({ authClient, model }) {
+        this.authClient = authClient;
+        this.model = model;
+        this.baseUrl = 'https://generativelanguage.googleapis.com/v1beta/models';
+    }
+
+    async _headers() {
+        const tokenResp = await this.authClient.getAccessToken();
+        const accessToken = typeof tokenResp === 'string' ? tokenResp : tokenResp?.token;
+        if (!accessToken) {
+            const e = new Error('Failed to acquire Google OAuth access token');
+            e.code = 'OAUTH_TOKEN_MISSING';
+            throw e;
+        }
+        return {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+        };
+    }
+
+    async request(payload) {
+        const headers = await this._headers();
+        const url = `${this.baseUrl}/${encodeURIComponent(this.model)}:generateContent`;
+        const resp = await originalFetch(url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload)
+        });
+        const text = await resp.text();
+        let json = {};
+        try {
+            json = text ? JSON.parse(text) : {};
+        } catch {
+            json = {};
+        }
+        if (!resp.ok) {
+            const e = new Error(`Gemini REST error ${resp.status}: ${text || resp.statusText}`);
+            e.status = resp.status;
+            e.code = resp.status;
+            throw e;
+        }
+        return json;
+    }
+
+    async requestStream(payload) {
+        const headers = await this._headers();
+        const url = `${this.baseUrl}/${encodeURIComponent(this.model)}:streamGenerateContent?alt=sse`;
+        const resp = await originalFetch(url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload)
+        });
+        if (!resp.ok) {
+            const text = await resp.text();
+            const e = new Error(`Gemini REST stream error ${resp.status}: ${text || resp.statusText}`);
+            e.status = resp.status;
+            e.code = resp.status;
+            throw e;
+        }
+        if (!resp.body) {
+            const e = new Error('Gemini REST stream returned empty body');
+            e.code = 'EMPTY_STREAM_BODY';
+            throw e;
+        }
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let lastJson = { candidates: [] };
+        const merged = { candidates: [] };
+        let resolveFinal;
+        const finalResponse = new Promise((resolve) => {
+            resolveFinal = resolve;
+        });
+
+        const parseSseEvent = (rawEvent = '') => {
+            const lines = String(rawEvent || '').split(/\r?\n/);
+            const dataLines = [];
+            for (const line of lines) {
+                if (!line.startsWith('data:')) continue;
+                dataLines.push(line.slice(5).trimStart());
+            }
+            if (!dataLines.length) return null;
+            const data = dataLines.join('\n').trim();
+            if (!data || data === '[DONE]') return null;
+            try {
+                return JSON.parse(data);
+            } catch {
+                return null;
+            }
+        };
+
+        const stream = (async function* () {
+            try {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+
+                    while (true) {
+                        const idxLf = buffer.indexOf('\n\n');
+                        const idxCrLf = buffer.indexOf('\r\n\r\n');
+                        const hasLf = idxLf >= 0;
+                        const hasCrLf = idxCrLf >= 0;
+                        if (!hasLf && !hasCrLf) break;
+                        const useCrLf = hasCrLf && (!hasLf || idxCrLf < idxLf);
+                        const splitIdx = useCrLf ? idxCrLf : idxLf;
+                        const sepLen = useCrLf ? 4 : 2;
+                        const rawEvent = buffer.slice(0, splitIdx);
+                        buffer = buffer.slice(splitIdx + sepLen);
+                        const json = parseSseEvent(rawEvent);
+                        if (!json) continue;
+                        lastJson = json;
+                        const chunkCandidates = Array.isArray(json?.candidates) ? json.candidates : [];
+                        for (let i = 0; i < chunkCandidates.length; i++) {
+                            const src = chunkCandidates[i] || {};
+                            if (!merged.candidates[i]) merged.candidates[i] = { content: { parts: [] } };
+                            const srcParts = src?.content?.parts || [];
+                            if (!Array.isArray(merged.candidates[i].content?.parts)) {
+                                merged.candidates[i].content = { parts: [] };
+                            }
+                            merged.candidates[i].content.parts.push(...srcParts);
+                            if (src.finishReason && !merged.candidates[i].finishReason) {
+                                merged.candidates[i].finishReason = src.finishReason;
+                            }
+                        }
+                        yield json;
+                    }
+                }
+
+                // Flush any trailing event block without blank-line terminator.
+                const trailing = parseSseEvent(buffer);
+                if (trailing) {
+                    lastJson = trailing;
+                    const trailingCandidates = Array.isArray(trailing?.candidates) ? trailing.candidates : [];
+                    for (let i = 0; i < trailingCandidates.length; i++) {
+                        const src = trailingCandidates[i] || {};
+                        if (!merged.candidates[i]) merged.candidates[i] = { content: { parts: [] } };
+                        const srcParts = src?.content?.parts || [];
+                        if (!Array.isArray(merged.candidates[i].content?.parts)) {
+                            merged.candidates[i].content = { parts: [] };
+                        }
+                        merged.candidates[i].content.parts.push(...srcParts);
+                        if (src.finishReason && !merged.candidates[i].finishReason) {
+                            merged.candidates[i].finishReason = src.finishReason;
+                        }
+                    }
+                    yield trailing;
+                }
+            } finally {
+                const hasMergedParts = merged.candidates.some((c) => Array.isArray(c?.content?.parts) && c.content.parts.length > 0);
+                resolveFinal(hasMergedParts ? merged : lastJson);
+            }
+        })();
+
+        return { stream, finalResponse };
+    }
+}
+
+class OAuthGenerativeModel {
+    constructor(modelConfig, authClient) {
+        this.modelConfig = modelConfig;
+        this.transport = new OAuthGeminiTransport({
+            authClient,
+            model: modelConfig.model || 'gemini-3-flash-preview'
+        });
+    }
+
+    _buildPayload(contents = []) {
+        const payload = {
+            contents,
+            tools: this.modelConfig.tools || []
+        };
+
+        if (this.modelConfig.systemInstruction) {
+            payload.systemInstruction = {
+                role: 'system',
+                parts: [{ text: this.modelConfig.systemInstruction }]
+            };
+        }
+        if (this.modelConfig.generationConfig) {
+            payload.generationConfig = this.modelConfig.generationConfig;
+        }
+        return payload;
+    }
+
+    async generateContent({ contents }) {
+        const json = await this.transport.request(this._buildPayload(contents));
+        return { response: Promise.resolve(_decorateGeminiResponse(json)) };
+    }
+
+    async generateContentStream({ contents }) {
+        const { stream, finalResponse } = await this.transport.requestStream(this._buildPayload(contents));
+        const wrappedStream = (async function* () {
+            for await (const chunk of stream) {
+                yield {
+                    text() {
+                        return _extractTextFromCandidates(chunk?.candidates || []);
+                    }
+                };
+            }
+        })();
+        return {
+            stream: wrappedStream,
+            response: finalResponse.then((raw) => _decorateGeminiResponse(raw))
+        };
+    }
+
+    startChat() {
+        throw new Error('startChat is not implemented for private_key mode');
+    }
+}
+
 class GeminiService {
     constructor() {
         this.apiKey = process.env.GOOGLE_API_KEY;
-        if (!this.apiKey) {
-            logger.error('GOOGLE_API_KEY is not defined in environment variables');
+        this.authMode = 'api_key';
+        this.oauthClient = null;
+
+        const svcFromJson = this._loadServiceAccountJson();
+        const clientEmail = process.env.GOOGLE_CLIENT_EMAIL || svcFromJson?.client_email || '';
+        const privateKeyRaw = process.env.GOOGLE_PRIVATE_KEY || svcFromJson?.private_key || '';
+        const privateKey = String(privateKeyRaw || '').replace(/\\n/g, '\n').trim();
+
+        if (clientEmail && privateKey) {
+            this.authMode = 'private_key';
+            this.oauthClient = new JWT({
+                email: clientEmail,
+                key: privateKey,
+                scopes: [
+                    'https://www.googleapis.com/auth/generative-language',
+                    'https://www.googleapis.com/auth/cloud-platform'
+                ]
+            });
+            this.genAI = null;
+            logger.info('GeminiService: Initialized in private_key auth mode (service account).');
+        } else {
+            if (!this.apiKey) {
+                logger.error('GOOGLE_API_KEY is not defined in environment variables');
+            }
+            this.genAI = new GoogleGenerativeAI(this.apiKey);
+            logger.info('GeminiService: Initialized in api_key auth mode.');
         }
-        this.genAI = new GoogleGenerativeAI(this.apiKey);
 
         // Load VIVERSE SDK knowledge base (Deep Summary Index to save tokens)
         this.viverseKnowledge = `VIVERSE PLATFORM CONTEXT:
@@ -183,6 +460,224 @@ Available Documentation (Use 'readDoc' to read):
         };
 
         this.models = {};
+        this.commandConvergence = new Map();
+    }
+
+    _loadServiceAccountJson() {
+        const raw = String(process.env.GOOGLE_SERVICE_ACCOUNT_JSON || '').trim();
+        if (!raw) return null;
+        try {
+            return JSON.parse(raw);
+        } catch {
+            try {
+                const decoded = Buffer.from(raw, 'base64').toString('utf8');
+                return JSON.parse(decoded);
+            } catch {
+                logger.warn('GeminiService: GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON/base64 JSON.');
+                return null;
+            }
+        }
+    }
+
+    _workspaceConvergenceState(workspacePath = null) {
+        const key = workspacePath || '__global__';
+        if (!this.commandConvergence.has(key)) {
+            this.commandConvergence.set(key, {
+                mutationVersion: 0,
+                byClass: {},
+                addLessonCount: 0,
+                runCommandCount: 0,
+                distGrepCount: 0,
+                lastDistGrepMutationVersion: -1
+            });
+        }
+        return this.commandConvergence.get(key);
+    }
+
+    _resetTurnCounters(workspacePath = null) {
+        const state = this._workspaceConvergenceState(workspacePath);
+        state.addLessonCount = 0;
+        state.runCommandCount = 0;
+        state.distGrepCount = 0;
+    }
+
+    _bumpMutationVersion(workspacePath = null) {
+        const state = this._workspaceConvergenceState(workspacePath);
+        state.mutationVersion += 1;
+    }
+
+    _classifyCommand(command = '') {
+        const cmd = String(command || '').toLowerCase();
+        if (!cmd.trim()) return '';
+        if (/(^|\s)grep(\s|$)/.test(cmd) && /\bdist\b/.test(cmd)) {
+            return 'dist_appid_check';
+        }
+        if (/npm\s+run\s+build/.test(cmd)) return 'build';
+        return '';
+    }
+
+    _outputSignature(toolResult) {
+        if (!toolResult || typeof toolResult !== 'object') return String(toolResult || '');
+        const reduced = {
+            error: String(toolResult.error || ''),
+            stdout: String(toolResult.stdout || '').slice(0, 400),
+            stderr: String(toolResult.stderr || '').slice(0, 400)
+        };
+        return JSON.stringify(reduced);
+    }
+
+    _truncateText(value = '', maxChars = 16000) {
+        const text = String(value ?? '');
+        if (text.length <= maxChars) return text;
+        const head = text.slice(0, maxChars);
+        return `${head}\n...[truncated ${text.length - maxChars} chars]`;
+    }
+
+    _sanitizeToolResultForModel(toolName = '', toolResult = null) {
+        const name = String(toolName || '');
+        const MAX_TEXT = 16000;
+        const MAX_JSON = 120000;
+
+        let out = toolResult;
+
+        if (typeof out === 'string') {
+            out = this._truncateText(out, MAX_TEXT);
+        } else if (Array.isArray(out)) {
+            out = out.slice(0, 200);
+        } else if (out && typeof out === 'object') {
+            const copy = { ...out };
+            if (typeof copy.stdout === 'string') copy.stdout = this._truncateText(copy.stdout, MAX_TEXT);
+            if (typeof copy.stderr === 'string') copy.stderr = this._truncateText(copy.stderr, MAX_TEXT);
+            if (typeof copy.error === 'string') copy.error = this._truncateText(copy.error, 4000);
+            out = copy;
+        }
+
+        // readFile/readDoc/loadSkill can easily blow the tool-loop context window.
+        if (name === 'readFile' || name === 'readDoc' || name === 'loadSkill') {
+            if (typeof out === 'string') {
+                out = this._truncateText(out, 24000);
+            } else if (out && typeof out === 'object') {
+                for (const k of Object.keys(out)) {
+                    if (typeof out[k] === 'string') out[k] = this._truncateText(out[k], 24000);
+                }
+            }
+        }
+
+        try {
+            const encoded = JSON.stringify(out);
+            if (encoded && encoded.length > MAX_JSON) {
+                return {
+                    truncated: true,
+                    tool: name,
+                    note: `Tool result exceeded ${MAX_JSON} chars and was compacted.`,
+                    preview: this._truncateText(encoded, 24000)
+                };
+            }
+        } catch (_) {
+            return this._truncateText(String(out ?? ''), 24000);
+        }
+
+        return out;
+    }
+
+    _isRateLimitError(error) {
+        const msg = String(error?.message || error || '');
+        const code = error?.status || error?.code;
+        return code === 429 || msg.includes('429') || msg.toLowerCase().includes('quota exceeded') || msg.toLowerCase().includes('too many requests');
+    }
+
+    _extractRetryDelayMs(error, attempt = 1) {
+        const msg = String(error?.message || error || '');
+        const secFromRetryIn = msg.match(/retry in\s+([0-9]+(?:\.[0-9]+)?)s?/i);
+        if (secFromRetryIn) return Math.ceil(Number(secFromRetryIn[1]) * 1000) + 250;
+
+        const secFromRpc = msg.match(/"retryDelay":"([0-9]+)s"/i);
+        if (secFromRpc) return Math.ceil(Number(secFromRpc[1]) * 1000) + 250;
+
+        const base = Math.min(120000, 15000 * attempt);
+        return base + Math.floor(Math.random() * 500);
+    }
+
+    async _withRateLimitRetry(fn, label = 'gemini_call', maxRetries = 5) {
+        let attempt = 0;
+        // total attempts = 1 + maxRetries
+        while (true) {
+            attempt += 1;
+            try {
+                return await fn();
+            } catch (error) {
+                const canRetry = this._isRateLimitError(error) && attempt <= maxRetries;
+                if (!canRetry) throw error;
+
+                const delayMs = this._extractRetryDelayMs(error, attempt);
+                logger.warn(`GeminiService: ${label} hit rate limit (attempt ${attempt}). Retrying in ${delayMs}ms`);
+                await new Promise((resolve) => setTimeout(resolve, delayMs));
+            }
+        }
+    }
+
+    _normalizeAttachments(attachments = []) {
+        if (!Array.isArray(attachments)) return [];
+        const docMimes = new Set([
+            'application/pdf',
+            'application/msword',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'text/plain',
+            'text/markdown',
+            'application/json',
+            'text/csv'
+        ]);
+        return attachments
+            .map((item) => {
+                const mimeType = String(item?.mimeType || item?.type || '').toLowerCase();
+                const data = typeof item?.dataBase64 === 'string' ? item.dataBase64.trim() : '';
+                if (!mimeType || !data) return null;
+                const isMedia = mimeType.startsWith('image/') || mimeType.startsWith('video/');
+                const isDoc = docMimes.has(mimeType);
+                if (!isMedia && !isDoc) return null;
+                return {
+                    name: item?.name || 'attachment',
+                    mimeType,
+                    dataBase64: data
+                };
+            })
+            .filter(Boolean);
+    }
+
+    _isTextSpecMime(mimeType = '') {
+        const m = String(mimeType).toLowerCase();
+        return (
+            m === 'text/plain' ||
+            m === 'text/markdown' ||
+            m === 'application/json' ||
+            m === 'text/csv'
+        );
+    }
+
+    _buildUserParts(message, attachments = []) {
+        const parts = [{ text: String(message || '') }];
+        const media = this._normalizeAttachments(attachments);
+        for (const file of media) {
+            if (this._isTextSpecMime(file.mimeType)) {
+                try {
+                    const text = Buffer.from(file.dataBase64, 'base64').toString('utf8');
+                    const trimmed = text.length > 50000 ? `${text.slice(0, 50000)}\n...[truncated]` : text;
+                    parts.push({
+                        text: `\n[ATTACHED SPEC FILE: ${file.name} | ${file.mimeType}]\n${trimmed}\n[END SPEC FILE]\n`
+                    });
+                    continue;
+                } catch (_) {
+                    // Fallback to inlineData when decode fails.
+                }
+            }
+            parts.push({
+                inlineData: {
+                    mimeType: file.mimeType,
+                    data: file.dataBase64
+                }
+            });
+        }
+        return parts;
     }
 
     async refreshKnowledge() {
@@ -242,18 +737,24 @@ Available Documentation (Use 'readDoc' to read):
             modelConfig.generationConfig = { responseMimeType: "application/json" };
         }
 
-        const model = this.genAI.getGenerativeModel(modelConfig);
+        const model = this.authMode === 'private_key'
+            ? new OAuthGenerativeModel(modelConfig, this.oauthClient)
+            : this.genAI.getGenerativeModel(modelConfig);
 
         this.models[roleKey] = model;
         return model;
     }
 
-    async generateResponse(message, history = [], roleKey = "ORCHESTRATOR", workspacePath = null) {
+    async generateResponse(message, history = [], roleKey = "ORCHESTRATOR", workspacePath = null, attachments = []) {
+        this._resetTurnCounters(workspacePath);
         const model = this.getModelForRole(roleKey);
         const contents = this._normalizeHistory(history);
-        contents.push({ role: 'user', parts: [{ text: message }] });
+        contents.push({ role: 'user', parts: this._buildUserParts(message, attachments) });
         
-        let result = await model.generateContent({ contents });
+        let result = await this._withRateLimitRetry(
+            () => model.generateContent({ contents }),
+            'generateContent'
+        );
         let response = await result.response;
 
         // Tool calling loop
@@ -264,7 +765,7 @@ Available Documentation (Use 'readDoc' to read):
             toolIterations++;
             if (toolIterations > MAX_TOOL_ITERATIONS) {
                 logger.error(`GeminiService: MAX_TOOL_ITERATIONS reached in generateResponse.`);
-                break;
+                throw new Error('MAX_TOOL_ITERATIONS_REACHED');
             }
             const modelParts = response.candidates[0].content.parts;
             
@@ -284,14 +785,18 @@ Available Documentation (Use 'readDoc' to read):
             const toolResponses = await this._handleFunctionCalls(response.functionCalls(), workspacePath);
             contents.push({ role: 'user', parts: toolResponses });
 
-            result = await model.generateContent({ contents });
+            result = await this._withRateLimitRetry(
+                () => model.generateContent({ contents }),
+                'generateContent(toolLoop)'
+            );
             response = await result.response;
         }
 
         return response.text();
     }
 
-    async *generateResponseStream(message, history = [], roleKey = "ORCHESTRATOR", workspacePath = null) {
+    async *generateResponseStream(message, history = [], roleKey = "ORCHESTRATOR", workspacePath = null, attachments = []) {
+        this._resetTurnCounters(workspacePath);
         let model = this.getModelForRole(roleKey);
         const contents = this._normalizeHistory(history);
 
@@ -312,9 +817,12 @@ Available Documentation (Use 'readDoc' to read):
             }
         }
 
-        contents.push({ role: 'user', parts: [{ text: message }] });
+        contents.push({ role: 'user', parts: this._buildUserParts(message, attachments) });
 
-        let result = await model.generateContentStream({ contents });
+        let result = await this._withRateLimitRetry(
+            () => model.generateContentStream({ contents }),
+            'generateContentStream'
+        );
 
         for await (const chunk of result.stream) {
             try {
@@ -335,7 +843,7 @@ Available Documentation (Use 'readDoc' to read):
             if (toolIterationsCount > MAX_TOOL_ITERATIONS_COUNT) {
                 logger.error(`GeminiService: MAX_TOOL_ITERATIONS reached in generateResponseStream.`);
                 yield { type: 'text', content: "\n\n[SYSTEM ERROR]: Periodic maintenance loop detected. Automatically stabilizing agent..." };
-                break;
+                throw new Error('MAX_TOOL_ITERATIONS_REACHED');
             }
             const modelParts = response.candidates[0].content.parts;
             
@@ -369,7 +877,10 @@ Available Documentation (Use 'readDoc' to read):
             
             contents.push({ role: 'user', parts: toolResponses });
 
-            result = await model.generateContentStream({ contents });
+            result = await this._withRateLimitRetry(
+                () => model.generateContentStream({ contents }),
+                'generateContentStream(toolLoop)'
+            );
 
             for await (const chunk of result.stream) {
                 try {
@@ -399,9 +910,56 @@ Available Documentation (Use 'readDoc' to read):
             try {
                 let toolResult;
                 if (name === "readFile") toolResult = await fileService.readFile(args.filePath, workspacePath);
-                else if (name === "writeFile") toolResult = await fileService.writeFile(args.filePath, args.content, workspacePath);
+                else if (name === "writeFile") {
+                    toolResult = await fileService.writeFile(args.filePath, args.content, workspacePath);
+                    this._bumpMutationVersion(workspacePath);
+                }
                 else if (name === "listFiles") toolResult = await fileService.listFiles(args.dirPath, workspacePath);
-                else if (name === "runCommand") toolResult = await fileService.runCommand(args.command, args.cwd, workspacePath);
+                else if (name === "runCommand") {
+                    const wsState = this._workspaceConvergenceState(workspacePath);
+                    wsState.runCommandCount = Number(wsState.runCommandCount || 0) + 1;
+                    toolResult = await fileService.runCommand(args.command, args.cwd, workspacePath);
+                    const commandClass = this._classifyCommand(args.command);
+                    if (commandClass === 'build') {
+                        this._bumpMutationVersion(workspacePath);
+                    } else if (commandClass) {
+                        const state = this._workspaceConvergenceState(workspacePath);
+                        const byClass = state.byClass || {};
+                        const record = byClass[commandClass] || {
+                            repeatCount: 0,
+                            lastMutationVersion: -1,
+                            lastOutputSig: ''
+                        };
+                        const outputSig = this._outputSignature(toolResult);
+                        const sameOutput = record.lastOutputSig === outputSig;
+                        const sameMutation = record.lastMutationVersion === state.mutationVersion;
+                        if (sameOutput && sameMutation) {
+                            record.repeatCount += 1;
+                        } else {
+                            record.repeatCount = 1;
+                            record.lastOutputSig = outputSig;
+                            record.lastMutationVersion = state.mutationVersion;
+                        }
+                        byClass[commandClass] = record;
+                        state.byClass = byClass;
+
+                        const sameBuildMutation = state.lastDistGrepMutationVersion === state.mutationVersion;
+                        if (!sameBuildMutation) {
+                            state.distGrepCount = 0;
+                            state.lastDistGrepMutationVersion = state.mutationVersion;
+                        }
+                        state.distGrepCount = Number(state.distGrepCount || 0) + 1;
+
+                        if (record.repeatCount >= 3 || state.distGrepCount >= 8) {
+                            toolResult = {
+                                ...toolResult,
+                                error: `CONVERGENCE_GUARD: excessive dist grep probing without meaningful state change. Stop free-form token hunting and perform deterministic App ID propagation verification (.env -> source -> dist) with the authoritative 10-char app id.`,
+                                retriable: false,
+                                convergenceGuard: true
+                            };
+                        }
+                    }
+                }
                 else if (name === "runBackgroundCommand") toolResult = await fileService.runBackgroundCommand(args.command, args.cwd, workspacePath);
                 else if (name === "checkCommandStatus") toolResult = await fileService.checkCommandStatus(args.jobId, args.cwd, workspacePath);
                 else if (name === "discoverProject") {
@@ -418,7 +976,27 @@ Available Documentation (Use 'readDoc' to read):
                     toolResult = fs.existsSync(skillPath) ? fs.readFileSync(skillPath, 'utf8') : { error: "Skill not found" };
                 }
                 else if (name === "addLesson") {
-                    toolResult = await fileService.addLesson(args.lesson, workspacePath);
+                    const wsState = this._workspaceConvergenceState(workspacePath);
+                    wsState.addLessonCount = Number(wsState.addLessonCount || 0) + 1;
+                    if (wsState.addLessonCount > 3) {
+                        toolResult = {
+                            error: "CONVERGENCE_GUARD: addLesson call cap reached for this turn (max 3). Continue implementation/review without adding more lessons.",
+                            retriable: false,
+                            convergenceGuard: true
+                        };
+                    } else {
+                        toolResult = await fileService.addLesson(args.lesson, workspacePath);
+                    }
+                }
+
+                toolResult = this._sanitizeToolResultForModel(name, toolResult);
+
+                if (toolResult && typeof toolResult === 'object' && toolResult.fatal === true) {
+                    const fatalToolError = new Error(`FATAL_TOOL_ERROR:${toolResult.errorCode || 'UNKNOWN'}:${toolResult.error || 'Unknown fatal tool error'}`);
+                    fatalToolError.fatalTool = true;
+                    fatalToolError.toolName = name;
+                    fatalToolError.toolResult = toolResult;
+                    throw fatalToolError;
                 }
 
                 // Preserving ID in functionResponse for Gemini 3 compatibility
@@ -433,6 +1011,10 @@ Available Documentation (Use 'readDoc' to read):
                 toolResponses.push(responsePart);
                 debugInfo.toolResponses.push(responsePart);
             } catch (error) {
+                if (error && error.fatalTool) {
+                    logger.error(`GeminiService: Fatal tool error in ${error.toolName}: ${error.message}`);
+                    throw error;
+                }
                 const responsePart = {
                     functionResponse: { 
                         name, 
@@ -524,4 +1106,3 @@ Available Documentation (Use 'readDoc' to read):
 }
 
 export default new GeminiService();
-

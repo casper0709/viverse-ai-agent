@@ -64,6 +64,12 @@
                 </div>
 
                 <footer class="chat-input-area">
+                    <div class="attachments-toolbar">
+                        <input type="file" id="media-input" accept="image/*,video/*,.pdf,.doc,.docx,.txt,.md,.json,.csv" multiple hidden>
+                        <button id="attach-btn" class="attach-btn" type="button">Attach Media/Spec</button>
+                        <div id="attachment-count" class="attachment-count hidden">0 files</div>
+                    </div>
+                    <div id="attachment-preview" class="attachment-preview hidden"></div>
                     <div class="input-wrapper">
                         <textarea id="user-input" placeholder="Type your message here..." rows="1"></textarea>
                         <button id="send-btn" class="send-btn">

@@ -2,6 +2,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const chatMessages = document.getElementById('chat-messages');
     const userInput = document.getElementById('user-input');
     const sendBtn = document.getElementById('send-btn');
+    const attachBtn = document.getElementById('attach-btn');
+    const mediaInput = document.getElementById('media-input');
+    const attachmentPreview = document.getElementById('attachment-preview');
+    const attachmentCount = document.getElementById('attachment-count');
     const lowerPreview = document.getElementById('lower-preview');
     const worldIframe = document.getElementById('world-iframe');
     const closePreviewBtn = document.getElementById('close-preview');
@@ -17,6 +21,21 @@ document.addEventListener('DOMContentLoaded', () => {
     let activeWorldUrl = "";
     let savedCredentials = null;
     let pendingMessage = "";
+    let pendingAttachments = [];
+
+    const MAX_ATTACHMENTS = 4;
+    const MAX_FILE_SIZE = 12 * 1024 * 1024;
+    const MAX_TOTAL_FILE_SIZE = 48 * 1024 * 1024;
+    const ALLOWED_PREFIXES = ['image/', 'video/'];
+    const DOC_MIME_BY_EXT = {
+        pdf: 'application/pdf',
+        doc: 'application/msword',
+        docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        txt: 'text/plain',
+        md: 'text/markdown',
+        json: 'application/json',
+        csv: 'text/csv'
+    };
 
     function scrollToBottom() {
         const threshold = 50;
@@ -33,6 +52,77 @@ document.addEventListener('DOMContentLoaded', () => {
         bubble.innerHTML = marked.parse(safeContent);
         chatMessages.appendChild(bubble);
         scrollToBottom();
+    }
+
+    function updateAttachmentUI() {
+        attachmentPreview.innerHTML = '';
+        if (!pendingAttachments.length) {
+            attachmentPreview.classList.add('hidden');
+            attachmentCount.classList.add('hidden');
+            attachmentCount.textContent = '0 files';
+            return;
+        }
+
+        attachmentPreview.classList.remove('hidden');
+        attachmentCount.classList.remove('hidden');
+        attachmentCount.textContent = `${pendingAttachments.length} file${pendingAttachments.length > 1 ? 's' : ''}`;
+
+        pendingAttachments.forEach((file, index) => {
+            const pill = document.createElement('button');
+            pill.type = 'button';
+            pill.className = 'attachment-pill';
+            pill.innerHTML = `<span class="attachment-pill-name">${file.name}</span><span class="attachment-pill-remove">×</span>`;
+            pill.addEventListener('click', () => {
+                pendingAttachments.splice(index, 1);
+                updateAttachmentUI();
+            });
+            attachmentPreview.appendChild(pill);
+        });
+    }
+
+    function inferMimeType(file) {
+        const original = (file.type || '').toLowerCase();
+        if (original) return original;
+        const name = String(file.name || '').toLowerCase();
+        const ext = name.includes('.') ? name.split('.').pop() : '';
+        return DOC_MIME_BY_EXT[ext] || '';
+    }
+
+    function isSupportedMedia(file) {
+        const mimeType = inferMimeType(file);
+        if (!mimeType) return false;
+        if (ALLOWED_PREFIXES.some((prefix) => mimeType.startsWith(prefix))) return true;
+        return Object.values(DOC_MIME_BY_EXT).includes(mimeType);
+    }
+
+    function totalPendingBytes() {
+        return pendingAttachments.reduce((sum, item) => {
+            const base64Len = String(item?.dataBase64 || '').length;
+            const bytes = Math.floor((base64Len * 3) / 4);
+            return sum + bytes;
+        }, 0);
+    }
+
+    function toAttachment(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+                const result = String(reader.result || '');
+                const marker = 'base64,';
+                const idx = result.indexOf(marker);
+                if (idx === -1) {
+                    reject(new Error(`Failed to parse file: ${file.name}`));
+                    return;
+                }
+                resolve({
+                    name: file.name,
+                    mimeType: inferMimeType(file),
+                    dataBase64: result.slice(idx + marker.length)
+                });
+            };
+            reader.onerror = () => reject(new Error(`Failed to read file: ${file.name}`));
+            reader.readAsDataURL(file);
+        });
     }
 
     function showTypingIndicator() {
@@ -52,10 +142,14 @@ document.addEventListener('DOMContentLoaded', () => {
     async function sendMessage(overrideMessage = null, isAutoSend = false) {
         // Fix for event listener passing PointerEvent as first arg
         const actualMessage = (overrideMessage && typeof overrideMessage === 'string') ? overrideMessage : userInput.value.trim();
-        if (!actualMessage) return;
+        const requestMessage = actualMessage || 'Please analyze the attached media.';
+        if (!actualMessage && pendingAttachments.length === 0) return;
 
         if (!isAutoSend) {
-            appendMessage('user', actualMessage);
+            const attachmentLabel = pendingAttachments.length
+                ? `\n\nAttached media:\n${pendingAttachments.map((a) => `- ${a.name}`).join('\n')}`
+                : '';
+            appendMessage('user', `${actualMessage || '(media only)'}${attachmentLabel}`);
         }
         userInput.value = '';
         userInput.style.height = 'auto';
@@ -64,10 +158,16 @@ document.addEventListener('DOMContentLoaded', () => {
         let localHeartbeat = null;
 
         try {
-            const payload = { message: actualMessage, history: chatHistory };
+            const payload = { message: requestMessage, history: chatHistory };
+            if (pendingAttachments.length) {
+                payload.attachments = [...pendingAttachments];
+            }
             if (savedCredentials) {
                 payload.credentials = savedCredentials;
             }
+
+            pendingAttachments = [];
+            updateAttachmentUI();
 
             const response = await fetch('/api/ai/chat', {
                 method: 'POST',
@@ -151,7 +251,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 errorLine.innerHTML = `⚠️ Error: ${parsed.content}`;
                                 statusContainer.appendChild(errorLine);
                             } else if (parsed.type === 'action' && parsed.action === 'require_credentials') {
-                                pendingMessage = actualMessage; // Store intent for auto-continue
+                                pendingMessage = requestMessage; // Store intent for auto-continue
                                 const accountPanel = document.querySelector('.account-panel');
                                 accountPanel.classList.add('visible');
                                 accountPanel.classList.remove('highlight');
@@ -172,7 +272,7 @@ document.addEventListener('DOMContentLoaded', () => {
             clearInterval(localHeartbeat);
             bubble.classList.remove('streaming');
             removeTypingIndicator();
-            chatHistory.push({ role: 'user', content: actualMessage });
+            chatHistory.push({ role: 'user', content: requestMessage });
             chatHistory.push({ role: 'assistant', content: accumulatedText });
 
         } catch (error) {
@@ -196,6 +296,37 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Event Listeners
     sendBtn.addEventListener('click', sendMessage);
+    attachBtn.addEventListener('click', () => mediaInput.click());
+    mediaInput.addEventListener('change', async (e) => {
+        const files = Array.from(e.target.files || []);
+        for (const file of files) {
+            if (pendingAttachments.length >= MAX_ATTACHMENTS) {
+                appendMessage('system', `Attachment limit reached (${MAX_ATTACHMENTS}).`);
+                break;
+            }
+            if (!isSupportedMedia(file)) {
+                appendMessage('system', `Unsupported file type: ${file.name} (supported: image/video/pdf/doc/docx/txt/md/json/csv)`);
+                continue;
+            }
+            if (file.size > MAX_FILE_SIZE) {
+                appendMessage('system', `File too large: ${file.name} (max 12MB each).`);
+                continue;
+            }
+            try {
+                const attachment = await toAttachment(file);
+                const nextTotal = totalPendingBytes() + Math.floor((String(attachment.dataBase64 || '').length * 3) / 4);
+                if (nextTotal > MAX_TOTAL_FILE_SIZE) {
+                    appendMessage('system', `Attachments total exceeds 48MB. Skip: ${file.name}`);
+                    continue;
+                }
+                pendingAttachments.push(attachment);
+            } catch (err) {
+                appendMessage('system', err.message || `Failed to attach ${file.name}`);
+            }
+        }
+        mediaInput.value = '';
+        updateAttachmentUI();
+    });
     userInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();

@@ -49,6 +49,8 @@ Use when a project needs:
 10. **MUST NOT** let non-host clients call `setRoomProperties(...)` / `updateRoom(...)` for gameplay-critical fields.
 11. **MUST** have non-host clients send move intents/snapshots via `MultiplayerClient.general.sendMessage(...)`, then host applies and publishes canonical state.
 12. **MUST** commit one complete turn as **one authoritative state write** (no split write like PLAY then delayed DRAW write).
+13. **MUST** verify host actor binding after create+join: confirm `session_id` exists in `mc.getMyRoomActors()` or `room.actors`; if missing, retry `setActor` + `joinRoom(roomId)` before entering waiting/start UI.
+14. **MUST NOT** call `joinRoom(ROOM_KEY)` using a synthetic/shared key directly. Always discover existing rooms first and join by real `room.id`/`room.roomId`.
 
 ## Implementation Workflow
 
@@ -115,6 +117,20 @@ if (existing) {
   // MANDATORY: Host auto-join (ensures session consistency)
   const roomId = room?.id || room?.roomId;
   if (roomId) await mc.joinRoom(roomId);
+
+  // MANDATORY: verify creator is actually in actor list
+  let bound = false;
+  for (let i = 0; i < 6; i++) {
+    const actors = (await mc.getMyRoomActors?.().catch(() => [])) || room?.actors || [];
+    if (actors.some(a => a.session_id === actorSessionId)) {
+      bound = true;
+      break;
+    }
+    await mc.setActor?.({ session_id: actorSessionId, name: user.displayName || 'Player', properties: {} }).catch(() => {});
+    if (roomId) await mc.joinRoom(roomId).catch(() => {});
+    await new Promise(r => setTimeout(r, 250));
+  }
+  if (!bound) throw new Error('Host session not bound to room after create/join retries');
 }
 ```
 
