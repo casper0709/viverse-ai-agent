@@ -33,11 +33,15 @@ if (!connected) console.warn("Matchmaking connection could not be verified.");
 // Generate unique session ID to prevent "undefined" or guest collisions
 const actorSessionId = `${user.accountId || user.account_id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-await matchmakingClient.setActor({
-  session_id: actorSessionId,
-  name: user.displayName || user.name || "Player",
-  properties: {}
-});
+if (typeof matchmakingClient.setActor === "function") {
+  await matchmakingClient.setActor({
+    session_id: actorSessionId,
+    name: user.displayName || user.name || "Player",
+    properties: {}
+  });
+} else {
+  throw new Error("Matchmaking client setActor API unavailable");
+}
 ```
 
 ## 2. Join or Create Room (Robust Flow)
@@ -124,7 +128,8 @@ matchmakingClient.on("onGameStartNotify", () => {
 
 After start (both master and non-master):
 ```javascript
-const roomId = room.id || room.game_session;
+const roomId = room?.id || room?.roomId || room?.game_session;
+if (!roomId) throw new Error("roomId is required");
 const mp = new (v.play?.MultiplayerClient || v.Play?.MultiplayerClient)(roomId, appId, actorSessionId);
 // Register listeners BEFORE init (Play SDK example pattern)
 mp.onConnected(() => console.log("connected"));

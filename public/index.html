@@ -37,6 +37,22 @@
                     </div>
                 </div>
             </div>
+            <div class="template-sidebar-section">
+                <div class="nav-label">App Templates</div>
+                <div class="template-prototype-panel">
+                    <div class="template-panel-head">
+                        <span class="template-panel-title">Production Templates</span>
+                        <button id="refresh-templates-btn" class="template-refresh-btn" type="button">Refresh</button>
+                    </div>
+                    <div class="template-panel-controls">
+                        <select id="template-select" class="template-select">
+                            <option value="">No template (free generation)</option>
+                        </select>
+                        <button id="template-generate-btn" class="template-generate-btn" type="button">Insert Prompt</button>
+                    </div>
+                    <div id="template-meta" class="template-meta">Loading templates...</div>
+                </div>
+            </div>
             <div class="sidebar-footer">
                 <div class="status-badge online">Endpoint: Online</div>
             </div>
@@ -57,8 +73,7 @@
 
                 <div id="chat-messages" class="chat-messages">
                     <div class="message-bubble system">
-                        <p>Welcome to VIVERSE Discovery. I am your specialized scout for exploring worlds, content, and
-                            spaces within the VIVERSE ecosystem. How can I help you find your next destination today?
+                        <p>Welcome to VIVERSE Discovery and App Generation. I can help you explore worlds, and also create, test, and publish VIVERSE apps from prompts or templates.
                         </p>
                     </div>
                 </div>

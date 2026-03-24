@@ -19,6 +19,28 @@ const EXTRA_DOC_MIME_TYPES = new Set([
     'application/json',
     'text/csv'
 ]);
+const TEMPLATE_CATALOG = [
+    {
+        id: 'battletanks-v1',
+        name: 'BattleTanks Base Template',
+        version: '1.0.0',
+        genre: 'Action Shooter',
+        description: 'Tank-combat starter template with protected engine core and customizable gameplay surface.',
+        tags: ['game', 'tank', 'action', 'threejs', 'multiplayer-ready'],
+        capabilities: ['auth', 'matchmaking', 'leaderboard', 'publish'],
+        recommendedPrompt: "Create a new tank battle game using template 'battletanks-v1'. Keep core architecture stable and customize gameplay rules and UI."
+    },
+    {
+        id: 'blank-webapp-v1',
+        name: 'Blank Web App',
+        version: '1.0.0',
+        genre: 'Utility',
+        description: 'Lightweight baseline for non-game app generation with VIVERSE integration hooks.',
+        tags: ['app', 'blank', 'utility'],
+        capabilities: ['auth', 'publish'],
+        recommendedPrompt: "Create a new web app from template 'blank-webapp-v1' and implement the requested feature set."
+    }
+];
 
 const isExecutionIntent = (message = '') => {
     const text = String(message || '').toLowerCase();
@@ -114,6 +136,30 @@ const isAttachmentValidationError = (message = '') => {
     );
 };
 
+const classifyIntentLocally = (message = '') => {
+    const text = String(message || '').trim().toLowerCase();
+    if (!text) return 'GENERAL';
+
+    // Explicit execution / project continuation always routes to orchestrator.
+    if (isExecutionIntent(text)) return 'PROJECT';
+
+    const projectSignals = [
+        /\b(build|create|generate|implement|code|publish|deploy|fix|debug|bug|error|stack trace|exception)\b/,
+        /\b(app|project|repo|workspace|template|viverse|sdk|playwright|leaderboard|matchmaking|auth)\b/,
+        /\b(req_\d{8,})\b/
+    ];
+    if (projectSignals.some((re) => re.test(text))) return 'PROJECT';
+
+    const generalSignals = [
+        /^(hi|hello|hey|thanks|thank you|good morning|good night)\b/,
+        /\b(what is|how are you|who are you|tell me about)\b/
+    ];
+    if (generalSignals.some((re) => re.test(text))) return 'GENERAL';
+
+    // Default to PROJECT to avoid dropping actionable engineering requests.
+    return 'PROJECT';
+};
+
 export const chat = async (req, res) => {
     let heartbeatTimer = null;
     const stopHeartbeat = () => {
@@ -197,15 +243,10 @@ export const chat = async (req, res) => {
                 return res.end();
             }
 
-            // Intent Classification
-            const intentPrompt = `Classify the user intent AS EXACTLY ONE WORD, either 'PROJECT' or 'GENERAL':
-            'PROJECT': requesting to build, code, create, publish, modify, FIX BUGS, DEBUG, or ANALYZE ERROR LOGS. Also includes CONTINUATION commands like 'proceed', 'continue', 'ok', or 'next' if they relate to an ongoing project.
-            'GENERAL': asking general questions, greeting, or chatting naturally.
-            User Message: "${message}"
-            Attached media count: ${media.length}
-            Reply strictly with 'PROJECT' or 'GENERAL'.`;
-            const intentText = await geminiService.generateResponse(intentPrompt, history || []);
-            const isGeneral = intentText.includes('GENERAL');
+            // Intent classification must be deterministic and local:
+            // avoid model/tool loops blocking the request pipeline.
+            const localIntent = classifyIntentLocally(message);
+            const isGeneral = localIntent === 'GENERAL';
 
             let responseStream;
             if (isGeneral) {
@@ -268,4 +309,33 @@ export const chat = async (req, res) => {
 
 export const healthCheck = (req, res) => {
     res.status(200).json({ status: 'AI Service is online' });
+};
+
+export const listTemplates = async (req, res) => {
+    const templates = TEMPLATE_CATALOG.map((item) => ({
+        id: item.id,
+        name: item.name,
+        version: item.version,
+        genre: item.genre,
+        description: item.description,
+        tags: item.tags,
+        capabilities: item.capabilities
+    }));
+    res.status(200).json({
+        success: true,
+        count: templates.length,
+        templates
+    });
+};
+
+export const getTemplateById = async (req, res) => {
+    const templateId = String(req.params?.templateId || '').trim().toLowerCase();
+    if (!templateId) {
+        return res.status(400).json({ success: false, error: 'templateId is required' });
+    }
+    const found = TEMPLATE_CATALOG.find((item) => item.id.toLowerCase() === templateId);
+    if (!found) {
+        return res.status(404).json({ success: false, error: `Template not found: ${templateId}` });
+    }
+    return res.status(200).json({ success: true, template: found });
 };

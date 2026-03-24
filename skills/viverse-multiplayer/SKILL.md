@@ -39,7 +39,7 @@ Use when a project needs:
 
 1. **MUST** create matchmaking with `playClient.newMatchmakingClient(appId)` and proactively call `mc.connect()` when available.
 2. **MUST** wait for connect signal (`onConnect`/`connect`) with timeout; do not block forever waiting on events.
-3. **MUST** run `setActor` after connect with a unique per-connect `session_id` (`accountId-timestamp-random`).
+3. **MUST** run `setActor` after connect with a unique per-connect `session_id` (`accountId-timestamp-random`) and guard method availability (`mc.setActor?.(...)` or explicit `if (typeof mc.setActor === "function")`).
 4. **MUST** use **Session-Matching Alpha** to resolve local `actor_id` by matching local `session_id` against `mc.getMyRoomActors()` or `room.actors`.
 5. **MUST** initialize `MultiplayerClient` with `await mp.init({ modules: { general: { enabled: true } } })` before using `mp.general`.
 6. **MUST NOT** call `mc.getActorId()` (non-existent API).
@@ -51,6 +51,7 @@ Use when a project needs:
 12. **MUST** commit one complete turn as **one authoritative state write** (no split write like PLAY then delayed DRAW write).
 13. **MUST** verify host actor binding after create+join: confirm `session_id` exists in `mc.getMyRoomActors()` or `room.actors`; if missing, retry `setActor` + `joinRoom(roomId)` before entering waiting/start UI.
 14. **MUST NOT** call `joinRoom(ROOM_KEY)` using a synthetic/shared key directly. Always discover existing rooms first and join by real `room.id`/`room.roomId`.
+15. **MUST** normalize and validate `roomId` before `new MultiplayerClient(...)`; if missing, throw `Error("roomId is required")` and stop gameplay initialization.
 
 ## Implementation Workflow
 
@@ -82,11 +83,15 @@ if (!isConnected) console.warn('Matchmaking connection could not be verified, pr
 
 // MANDATORY: Manual actor setup (v3.8)
 // Use the UNIQUE actorSessionId as the session_id to prevent stale session rebinding
-await mc.setActor({
+if (typeof mc.setActor === "function") {
+  await mc.setActor({
     session_id: actorSessionId,
     name: user.displayName || user.name || 'Player',
     properties: { avatarUrl: user.avatarUrl },
-});
+  });
+} else {
+  throw new Error("Matchmaking client setActor API unavailable");
+}
 ```
 
 ### 3) Join or Create Room (Robust Flow)
@@ -149,6 +154,7 @@ const MClient =
   (v?.play || v?.Play)?.MultiplayerClient ||
   window.play?.MultiplayerClient ||
   window.Play?.MultiplayerClient;
+if (!roomId) throw new Error("roomId is required");
 const mp = new MClient(roomId, appId, userSessionId);
 await mp.init({ modules: { general: { enabled: true } } });
 ```

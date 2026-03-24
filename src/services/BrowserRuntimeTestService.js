@@ -15,28 +15,67 @@ function isCriticalConsoleLine(line = '') {
     t.includes('referenceerror') ||
     t.includes('matchmaking failed') ||
     t.includes('host session not bound') ||
-    t.includes('checkauth_failed')
+    t.includes('checkauth_failed') ||
+    t.includes('setactor is not a function') ||
+    t.includes('roomid is required') ||
+    t.includes('initializing multiplayerclient for room: undefined') ||
+    t.includes('app id authority: your_app_id') ||
+    t.includes('unhandled methods: viverse_sdk/checkauth:ack')
   );
+}
+
+function isAccountLoginUrl(url = '') {
+  const u = String(url || '').toLowerCase();
+  return u.includes('account.htcvive.com/login') || u.includes('account.htcvive.com/login/saml');
+}
+
+function isWorldsUrl(url = '') {
+  return /https?:\/\/worlds\.viverse\.com/i.test(String(url || ''));
 }
 
 function deriveCheckStatusFromSnapshot(snapshot = {}) {
   const lines = Array.isArray(snapshot.console) ? snapshot.console : [];
   const critical = lines.filter((x) => isCriticalConsoleLine(x));
+  const pageUrl = String(snapshot.url || '');
+  const inWorldsContext = isWorldsUrl(pageUrl);
+  const inAccountLogin = isAccountLoginUrl(pageUrl);
   const hasJoined = lines.some((x) =>
     /\[multiplayer\].*joined room/i.test(x) ||
     /\[game\].*connected to room/i.test(x) ||
     /\[game\].*actor id resolved/i.test(x)
   );
+  const hasAppInitialized = lines.some((x) =>
+    /\[viverse\].*app initialized/i.test(x) ||
+    /\[diagnostic\].*app id:/i.test(x) ||
+    /\[viverse\]\[auth_success\]/i.test(x)
+  );
+  const hasProfilePayload = lines.some((x) =>
+    /\[viverse\].*(getuserinfo|getprofilebytoken|getprofile)/i.test(x) ||
+    /\[diagnostic\].*user:/i.test(x)
+  );
   const hasAuthReady = lines.some((x) =>
     /\[viverse\].*auth:\s*ready/i.test(x) ||
     /\[diagnostic\].*user authenticated:\s*true/i.test(x) ||
     /\[viverse\].*checkauth result:.*(access_token|account_id)/i.test(x)
-  );
+  ) || hasAppInitialized || hasProfilePayload;
   const hasSystemFaultText = /system fault/i.test(String(snapshot.bodyText || ''));
   const hasNoSessionText = /waiting for viverse hub authentication|no session/i.test(String(snapshot.bodyText || ''));
+  const hasPreviewSignIn = /play for free|sign in/i.test(String(snapshot.bodyText || ''));
+  const appRuntimeEvidence = hasAppInitialized || hasProfilePayload;
+  const authContextValid = inWorldsContext && !inAccountLogin;
 
-  const authStatus = hasAuthReady && !hasNoSessionText && !hasSystemFaultText && critical.length === 0 ? 'pass' : 'fail';
-  const matchmakingStatus = hasJoined && critical.length === 0 ? 'pass' : 'fail';
+  const authStatus =
+    authContextValid &&
+    appRuntimeEvidence &&
+    hasAuthReady &&
+    !hasNoSessionText &&
+    !hasSystemFaultText &&
+    !hasPreviewSignIn &&
+    critical.length === 0
+      ? 'pass'
+      : 'fail';
+  const matchmakingStatus =
+    authContextValid && hasJoined && critical.length === 0 ? 'pass' : 'fail';
 
   return {
     auth_profile: {
@@ -44,14 +83,14 @@ function deriveCheckStatusFromSnapshot(snapshot = {}) {
       proof:
         authStatus === 'pass'
           ? 'Browser logs indicate auth ready with no critical runtime faults.'
-          : `Auth not fully healthy. hasAuthReady=${hasAuthReady}, hasNoSessionText=${hasNoSessionText}, hasSystemFault=${hasSystemFaultText}, criticalErrors=${critical.length}`
+          : `Auth not fully healthy. url=${pageUrl || 'n/a'}, authContextValid=${authContextValid}, appRuntimeEvidence=${appRuntimeEvidence}, hasAuthReady=${hasAuthReady}, hasNoSessionText=${hasNoSessionText}, hasSystemFault=${hasSystemFaultText}, hasPreviewSignIn=${hasPreviewSignIn}, criticalErrors=${critical.length}`
     },
     matchmaking: {
       status: matchmakingStatus,
       proof:
         matchmakingStatus === 'pass'
           ? 'Browser logs include room join event with no critical runtime faults.'
-          : `Matchmaking evidence insufficient. hasJoined=${hasJoined}, criticalErrors=${critical.length}`
+          : `Matchmaking evidence insufficient. url=${pageUrl || 'n/a'}, authContextValid=${authContextValid}, hasJoined=${hasJoined}, criticalErrors=${critical.length}`
     },
     criticalErrors: critical
   };
@@ -325,6 +364,8 @@ class BrowserRuntimeTestService {
       await this._tryClick(page, [
         'button:has-text("FIND MATCH")',
         'button:has-text("Find Match")',
+        'button:has-text("ENTER BATTLE ARENA")',
+        'button:has-text("Enter Battle Arena")',
         'button:has-text("START MATCH")',
         'button:has-text("Start Match")',
         'button:has-text("PLAY")',
@@ -520,7 +561,12 @@ class BrowserRuntimeTestService {
 
       const derivedA = deriveCheckStatusFromSnapshot(snapA);
       const derivedB = deriveCheckStatusFromSnapshot(snapB);
-      const authPass = derivedA.auth_profile.status === 'pass' || derivedB.auth_profile.status === 'pass';
+      const stuckAtAccountLogin =
+        isAccountLoginUrl(snapA.url) ||
+        isAccountLoginUrl(snapB.url) ||
+        !sessionCheck?.ok;
+      const authPass = !stuckAtAccountLogin &&
+        (derivedA.auth_profile.status === 'pass' || derivedB.auth_profile.status === 'pass');
       const mpPass = derivedA.matchmaking.status === 'pass' || derivedB.matchmaking.status === 'pass';
 
       const report = {
@@ -562,7 +608,9 @@ class BrowserRuntimeTestService {
           status: authPass ? 'pass' : 'fail',
           proof: authPass
             ? 'At least one browser context reached auth-ready state without critical runtime fault.'
-            : `${derivedA.auth_profile.proof} | ${derivedB.auth_profile.proof}`
+            : stuckAtAccountLogin
+              ? `Preview contexts remained on account login or unauthenticated worlds state. sessionCheck=${sessionCheck?.reason || 'unknown'} | ${derivedA.auth_profile.proof} | ${derivedB.auth_profile.proof}`
+              : `${derivedA.auth_profile.proof} | ${derivedB.auth_profile.proof}`
         },
         {
           name: 'matchmaking',

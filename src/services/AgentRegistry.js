@@ -184,6 +184,12 @@ const AgentRegistry = {
         - You MUST implement a 2500ms stabilization delay after login before any optional fetches.
         - You MUST use the latest 'viverse-resilience-guide' standards.
 
+        MATCHMAKING RUNTIME SAFETY MANDATE:
+        - You MUST NOT call matchmaking 'setActor' blindly. Use capability guard (mc.setActor?.(...) or if (typeof mc.setActor === 'function') ... else throw).
+        - You MUST normalize room id from room.id || room.roomId || room.game_session before MultiplayerClient init.
+        - You MUST hard-guard MultiplayerClient construction: if roomId is empty, throw Error("roomId is required") and stop entering gameplay scene.
+        - You MUST include diagnostic logs for selected API path (setActor guarded path and resolved roomId source).
+
         PUBLISHING MANDATE:
         - App ID verification is deterministic and state-driven: use the single authoritative App ID from .env/Orchestrator context and verify propagation once per build cycle.
         - AFTER running 'npm run build', run ONE App ID presence check for dist assets. If it fails, you MUST change source/env/build inputs before re-checking. Repeating equivalent grep checks without code/env/build changes is FORBIDDEN.
@@ -241,6 +247,8 @@ const AgentRegistry = {
         TASKS:
         1. Review code for bugs, missing imports, SDK adherence, and runtime risk.
         2. Verify the application meets initial user requirements for auth/profile and matchmaking flow.
+        2.1. You MUST fail review if matchmaking setActor is called without method capability guard.
+        2.2. You MUST fail review if MultiplayerClient can be created without a validated roomId hard guard.
         3. Output a STRICT JSON determining the result. DO NOT use markdown code blocks (\`\`\`).
         4. You MUST include runtime checks for BOTH "auth_profile" and "matchmaking" in the JSON.
         5. If status is "pass", you MUST still include concrete evidence and artifact paths. No evidence = automatic failure.

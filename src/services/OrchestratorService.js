@@ -19,6 +19,18 @@ class OrchestratorService {
         this.maxAuthPreflightFixAttemptsPerSignature = 2;
     }
 
+    _hasComplianceSuccessClaim(text = "") {
+        const t = String(text || '');
+        return /(fully compliant|compliance gate passed|ready for deployment|all compliance checks passed|all checks passed)/i.test(t);
+    }
+
+    _maskComplianceSuccessClaims(text = "") {
+        return String(text || '').replace(
+            /(fully compliant|compliance gate passed|ready for deployment|all compliance checks passed|all checks passed)/ig,
+            '[pending gate verification]'
+        );
+    }
+
     async _finalizeWorkflowState(state, outcome = 'paused_or_failed') {
         if (!state || typeof state !== 'object') return;
         const normalized = outcome === 'completed' ? 'completed' : 'paused_or_failed';
@@ -297,6 +309,32 @@ Requirements:
         return previewAutoTestService.extractPreviewUrl(text);
     }
 
+    _resolveLatestPreviewUrl(state = {}) {
+        const events = Array.isArray(state?.runReport?.events) ? state.runReport.events : [];
+        for (let i = events.length - 1; i >= 0; i--) {
+            const ev = events[i];
+            const candidate = this._extractPreviewUrl(String(ev?.previewUrl || ""));
+            if (candidate) return candidate;
+        }
+        const fromSummary = this._extractPreviewUrl(String(state?.projectContextSummary || ""));
+        if (fromSummary) return fromSummary;
+        return "";
+    }
+
+    _buildOutcomeNotice(state = {}, { completed = false, reason = "" } = {}) {
+        const previewUrl = this._resolveLatestPreviewUrl(state);
+        const appId = String(state?.runtimeFlags?.appIdAuthority?.value || "");
+        const headline = completed
+            ? "✅ App Generation/Fix Flow Completed"
+            : "⚠️ App Generation/Fix Flow Paused";
+        const lines = [headline];
+        if (reason) lines.push(`Reason: ${reason}`);
+        if (appId) lines.push(`App ID: ${appId}`);
+        lines.push(`Preview URL: ${previewUrl || "not available yet"}`);
+        lines.push(completed ? "Next: open the preview URL to test." : "Next: open the preview URL (if available) and continue fix/retest.");
+        return lines.join('\n');
+    }
+
     async _pickWorkspace(workSpaceDir, { appIds = [], preferredWorkspace = null } = {}) {
         const files = await fs.readdir(workSpaceDir, { withFileTypes: true });
         const dirs = files
@@ -548,6 +586,93 @@ Requirements:
         });
     }
 
+    async _collectLatestPreviewArtifactFiles(workspacePath) {
+        const out = [];
+        if (!workspacePath) return out;
+        const previewRoot = path.join(workspacePath, 'artifacts', 'preview-tests');
+        try {
+            const entries = await fs.readdir(previewRoot, { withFileTypes: true });
+            const browserDirs = entries
+                .filter((e) => e.isDirectory() && e.name.startsWith('browser-'))
+                .map((e) => e.name)
+                .sort()
+                .reverse();
+            const latest = browserDirs[0];
+            if (!latest) return out;
+            const latestDir = path.join(previewRoot, latest);
+            for (const name of ['browser-report.json', 'host.log', 'joiner.log']) {
+                out.push(path.join(latestDir, name));
+            }
+        } catch {
+            // ignore
+        }
+        return out;
+    }
+
+    async _detectRuntimeBlockerSignatures(workspacePath, artifactPaths = []) {
+        const candidates = new Set();
+        const addIfFileLike = (p) => {
+            const v = String(p || '').trim();
+            if (!v) return;
+            if (!/\.(json|log|txt)$/i.test(v)) return;
+            const abs = path.isAbsolute(v) ? v : path.join(workspacePath, v);
+            candidates.add(abs);
+        };
+
+        for (const p of artifactPaths) addIfFileLike(p);
+        const latest = await this._collectLatestPreviewArtifactFiles(workspacePath);
+        for (const p of latest) addIfFileLike(p);
+
+        const issues = [];
+        const patterns = [
+            {
+                id: 'runtime-app-id-placeholder',
+                re: /app id authority:\s*your_app_id/i,
+                message: "Runtime blocker: app still reports placeholder App ID authority ('YOUR_APP_ID')."
+            },
+            {
+                id: 'runtime-checkauth-ack-unhandled',
+                re: /unhandled methods:\s*viverse_sdk\/checkauth:ack/i,
+                message: "Runtime blocker: SDK bridge reports unhandled 'VIVERSE_SDK/checkAuth:ack'."
+            },
+            {
+                id: 'runtime-setactor-missing-method',
+                re: /setactor is not a function/i,
+                message: "Runtime blocker: matchmaking client API mismatch ('setActor' unavailable at runtime)."
+            },
+            {
+                id: 'runtime-roomid-missing',
+                re: /roomid is required|initializing multiplayerclient for room:\s*undefined/i,
+                message: "Runtime blocker: MultiplayerClient initialized without a valid roomId."
+            }
+        ];
+
+        for (const absPath of candidates) {
+            let txt = '';
+            try {
+                txt = await fs.readFile(absPath, 'utf8');
+            } catch {
+                continue;
+            }
+            for (const p of patterns) {
+                if (!p.re.test(txt)) continue;
+                const rel = path.relative(workspacePath, absPath).replace(/\\/g, '/');
+                const exists = issues.find((i) => i.id === p.id);
+                if (exists) {
+                    if (!exists.artifacts.includes(rel)) exists.artifacts.push(rel);
+                } else {
+                    issues.push({
+                        id: p.id,
+                        message: p.message,
+                        artifacts: [rel]
+                    });
+                }
+            }
+        }
+
+        return issues;
+    }
+
     _sanitizeSummaryForAgent(summary = "", state = {}, role = "") {
         let out = String(summary || "");
         // Remove historical noisy App ID lines and re-inject a single canonical authority line.
@@ -693,7 +818,12 @@ Requirements:
         await geminiService.refreshKnowledge();
         const workSpaceDir = path.resolve(process.cwd(), '.viverse_workspaces');
         const lowerMsg = message.toLowerCase().trim();
-        const isResumeCommand = ["proceed", "continue", "go on", "ok", "yes", "next"].includes(lowerMsg);
+        const isResumeCommand =
+            ["proceed", "continue", "go on", "ok", "yes", "next"].includes(lowerMsg) ||
+            /^(resume|continue|proceed)\b/.test(lowerMsg);
+        const hasExplicitResumeInstruction =
+            /^(resume|continue|proceed)\b/.test(lowerMsg) &&
+            /\b(and|then|run|publish|probe|fix|build|test|verify|implement)\b/.test(lowerMsg);
         
         let workspacePath;
         let state;
@@ -703,7 +833,9 @@ Requirements:
         const appIdsFromHistory = this._extractAppIdCandidates(JSON.stringify(history || []));
         const appIds = [...new Set([...appIdsFromMsg, ...appIdsFromHistory])];
         const userKey = credentials?.email ? String(credentials.email).toLowerCase() : "";
-        const preferredWorkspace = userKey ? this.activeProjects.get(userKey) : null;
+        const reqHint = String(message || '').match(/\b(req_\d{8,})\b/i)?.[1] || "";
+        const explicitWorkspaceHint = reqHint ? path.join(workSpaceDir, reqHint) : null;
+        const preferredWorkspace = explicitWorkspaceHint || (userKey ? this.activeProjects.get(userKey) : null);
 
         // PRE-SCAN: choose best workspace candidate instead of blindly picking latest.
         try {
@@ -716,6 +848,21 @@ Requirements:
             }
         } catch (e) {
             logger.debug("No workspaces found.");
+        }
+
+        // If user asks for additional action but the resumed state has no pending tasks,
+        // force a fresh planning pass so follow-up instructions are not ignored.
+        if (state && isResumeCommand) {
+            const pendingCount = Array.isArray(state.tasks)
+                ? state.tasks.filter((t) => t.status === 'pending').length
+                : 0;
+            if (pendingCount === 0 && hasExplicitResumeInstruction) {
+                yield {
+                    type: 'status',
+                    content: 'No pending tasks in saved state. Re-planning follow-up tasks from your instruction...'
+                };
+                state = null;
+            }
         }
 
         // Step 1: Planning (Skip if strictly resuming)
@@ -1015,15 +1162,81 @@ Requirements:
                     workspacePath,
                     taskAttachments
                 );
+                const taskIdleTimeoutMs = Math.max(
+                    60000,
+                    Number(process.env.ORCHESTRATOR_TASK_IDLE_TIMEOUT_MS || 180000)
+                );
+                const taskDurationTimeoutMs = Math.max(
+                    120000,
+                    Number(process.env.ORCHESTRATOR_TASK_DURATION_TIMEOUT_MS || 420000)
+                );
                 
                 let fullResponse = "";
+                let emittedComplianceClaimNotice = false;
                 try {
-                    for await (const chunk of agentStream) {
+                    const iterator = agentStream[Symbol.asyncIterator]();
+                    const streamStartedAt = Date.now();
+                    let lastAgentChunkAt = streamStartedAt;
+                    const taskHeartbeatMs = Math.max(
+                        1500,
+                        Number(process.env.ORCHESTRATOR_TASK_HEARTBEAT_MS || 7000)
+                    );
+                    while (true) {
+                        const pendingNext = iterator.next();
+                        let nextResult = null;
+                        while (true) {
+                            const now = Date.now();
+                            const idleElapsed = now - lastAgentChunkAt;
+                            const durationElapsed = now - streamStartedAt;
+                            if (idleElapsed > taskIdleTimeoutMs) {
+                                throw new Error(`AGENT_TASK_IDLE_TIMEOUT:${taskIdleTimeoutMs}`);
+                            }
+                            if (durationElapsed > taskDurationTimeoutMs) {
+                                throw new Error(`AGENT_TASK_DURATION_TIMEOUT:${taskDurationTimeoutMs}`);
+                            }
+
+                            const waitMs = Math.max(
+                                250,
+                                Math.min(
+                                    taskHeartbeatMs,
+                                    taskIdleTimeoutMs - idleElapsed,
+                                    taskDurationTimeoutMs - durationElapsed
+                                )
+                            );
+
+                            const raceResult = await Promise.race([
+                                pendingNext.then((value) => ({ kind: 'next', value })),
+                                new Promise((resolve) => setTimeout(() => resolve({ kind: 'tick' }), waitMs))
+                            ]);
+
+                            if (raceResult?.kind === 'tick') {
+                                yield { type: 'status', content: '·' };
+                                continue;
+                            }
+
+                            nextResult = raceResult?.value;
+                            break;
+                        }
+
+                        if (nextResult?.done) break;
+                        lastAgentChunkAt = Date.now();
+                        const chunk = nextResult?.value;
+                        if (!chunk) continue;
                         if (chunk.type === 'text') {
                             fullResponse += chunk.content;
                             // Avoid leaking technical JSON from Reviewer/Orchestrator-Planner to the user
                             if (!fullResponse.trim().startsWith('{')) {
-                                yield { type: 'text', content: sanitizer.sanitize(chunk.content, credentials) };
+                                const roleUpper = String(task.role || '').toUpperCase();
+                                if (roleUpper === 'CODER' && this._hasComplianceSuccessClaim(chunk.content)) {
+                                    const masked = this._maskComplianceSuccessClaims(chunk.content);
+                                    yield { type: 'text', content: sanitizer.sanitize(masked, credentials) };
+                                    if (!emittedComplianceClaimNotice) {
+                                        emittedComplianceClaimNotice = true;
+                                        yield { type: 'status', content: 'Coder compliance claims are provisional until deterministic gate verification finishes.' };
+                                    }
+                                } else {
+                                    yield { type: 'text', content: sanitizer.sanitize(chunk.content, credentials) };
+                                }
                             }
                         } else if (chunk.type === 'status') {
                             yield { ...chunk, content: sanitizer.sanitize(chunk.content, credentials) };
@@ -1036,8 +1249,10 @@ Requirements:
                         state.runtimeFlags.authInvalid = true;
                     }
 
-                    const isCoder = String(task.role || '').toUpperCase() === 'CODER';
-                    const isToolLoop = /MAX_TOOL_ITERATIONS_REACHED|CONVERGENCE_GUARD/i.test(reason);
+                    const roleUpper = String(task.role || '').toUpperCase();
+                    const isCoder = roleUpper === 'CODER';
+                    const isVerifier = roleUpper === 'VERIFIER';
+                    const isToolLoop = /MAX_TOOL_ITERATIONS_REACHED|CONVERGENCE_GUARD|AGENT_TASK_IDLE_TIMEOUT|AGENT_TASK_DURATION_TIMEOUT/i.test(reason);
                     state.runtimeFlags = state.runtimeFlags || {};
                     state.runtimeFlags.loopRecovery = state.runtimeFlags.loopRecovery || {};
                     const recoveryKey = `${task.id}`;
@@ -1086,6 +1301,52 @@ Requirements:
                         continue;
                     }
 
+                    if (isVerifier && isToolLoop && prevRecoveryCount < 1) {
+                        const retryId = `loop_recover_verifier_${Date.now()}`;
+                        state.runtimeFlags.loopRecovery[recoveryKey] = prevRecoveryCount + 1;
+                        state.tasks.push({
+                            id: retryId,
+                            role: 'Verifier',
+                            prompt: `LOOP RECOVERY TASK (deterministic): Previous verifier task '${task.id}' failed due to tool loop (${reason}).
+Use existing workspace artifacts only; do NOT run broad recursive scans or repeated token-hunting loops.
+1) Read latest preview probe report under artifacts/preview-tests (most recent preview-*.json and linked browser-report.json).
+2) Return STRICT JSON with:
+   - status (pass/fail)
+   - runtime_checks.auth_profile.status/proof
+   - runtime_checks.matchmaking.status/proof
+   - preview_url_tested
+   - artifact_paths (exact files used)
+3) If evidence is stale/missing, run at most ONE targeted preview probe and then report once.`,
+                            dependsOn: [],
+                            status: 'pending'
+                        });
+                        for (const t of state.tasks) {
+                            if (t.status === 'pending' && Array.isArray(t.dependsOn) && t.dependsOn.includes(task.id)) {
+                                t.dependsOn = t.dependsOn.filter((d) => d !== task.id);
+                                if (!t.dependsOn.includes(retryId)) t.dependsOn.push(retryId);
+                            }
+                        }
+                        task.status = 'failed';
+                        this._appendRunEvent(state, {
+                            type: 'task_failed_recovered',
+                            taskId: task.id,
+                            role: task.role,
+                            durationMs: Date.now() - taskStartedAt,
+                            reason
+                        });
+                        projectContextSummary += `\n- ${task.role} LOOP RECOVERY scheduled from ${task.id}: ${reason}`;
+                        state.projectContextSummary = projectContextSummary;
+                        await this._saveState(state);
+                        yield {
+                            type: 'status',
+                            content: sanitizer.sanitize(
+                                `Task ${task.id} entered a verifier tool loop. Scheduling deterministic recovery task ${retryId}.`,
+                                credentials
+                            )
+                        };
+                        continue;
+                    }
+
                     task.status = 'failed';
                     this._appendRunEvent(state, {
                         type: 'task_failed',
@@ -1116,6 +1377,14 @@ Requirements:
                 }
                 
                 logger.info(`Orchestrator: Agent [${task.role}] stream finished. Response length: ${fullResponse.length}`);
+                if (String(task.role || '').toUpperCase() === 'CODER') {
+                    state.runtimeFlags = state.runtimeFlags || {};
+                    state.runtimeFlags.lastCoderComplianceClaim = {
+                        taskId: String(task.id || ''),
+                        claimed: this._hasComplianceSuccessClaim(fullResponse),
+                        at: new Date().toISOString()
+                    };
+                }
 
                 // Auth preflight deterministic gate (Phase 1.6)
                 if (task.id === 'auth_preflight' && task.role.toUpperCase() === 'CODER') {
@@ -1250,12 +1519,24 @@ Requirements:
                         }
 
                         if (gate.status === 'pass') {
+                            state.runtimeFlags = state.runtimeFlags || {};
+                            state.runtimeFlags.lastCoderGate = {
+                                taskId: String(task.id || ''),
+                                status: 'pass',
+                                findings: []
+                            };
                             const cacheSuffix = gate.cacheHit ? ' (cached)' : '';
                             yield {
                                 type: 'status',
                                 content: `Fast compliance gate passed${cacheSuffix}. Rules checked: ${gate.checkedRules}, files scanned: ${gate.scannedFiles}.`
                             };
                         } else if (gate.status === 'fail') {
+                            state.runtimeFlags = state.runtimeFlags || {};
+                            state.runtimeFlags.lastCoderGate = {
+                                taskId: String(task.id || ''),
+                                status: 'fail',
+                                findings: Array.isArray(gate.findings) ? gate.findings : []
+                            };
                             const phase = this._deriveCompliancePhase(task);
                             const severityRank = (s = '') => {
                                 const v = String(s || '').toLowerCase();
@@ -1376,6 +1657,33 @@ Requirements:
                         const runtimeChecks = Array.isArray(reviewJson.runtime_checks) ? reviewJson.runtime_checks : [];
                         const artifactPaths = Array.isArray(reviewJson.artifact_paths) ? reviewJson.artifact_paths : [];
                         const previewUrlTested = String(reviewJson.preview_url_tested || "").trim();
+                        const lastClaim = state?.runtimeFlags?.lastCoderComplianceClaim;
+                        const lastGate = state?.runtimeFlags?.lastCoderGate;
+                        const conflictingClaim =
+                            !!lastClaim?.claimed &&
+                            String(lastGate?.status || '').toLowerCase() === 'fail' &&
+                            Array.isArray(lastGate?.findings) &&
+                            lastGate.findings.length > 0;
+                        if (conflictingClaim) {
+                            const findingLines = lastGate.findings
+                                .slice(0, 8)
+                                .map((f) => `${f.ruleId || 'unknown-rule'}: ${f.message || 'failed'}`);
+                            reviewJson.status = 'fail';
+                            reviewJson.feedback = `${String(reviewJson.feedback || '')}\nGate conflict: coder claimed compliance but deterministic gate still has findings.`;
+                            for (const line of findingLines) {
+                                if (!blockingItems.includes(line)) blockingItems.push(line);
+                            }
+                            if (!evidence.includes('deterministic fast gate reported unresolved findings after coder compliance claim')) {
+                                evidence.push('deterministic fast gate reported unresolved findings after coder compliance claim');
+                            }
+                        }
+                        const runtimeBlockers = await this._detectRuntimeBlockerSignatures(workspacePath, artifactPaths);
+                        if (runtimeBlockers.length > 0) {
+                            for (const b of runtimeBlockers) {
+                                const line = `${b.message} Evidence: ${b.artifacts.join(', ')}`;
+                                if (!blockingItems.includes(line)) blockingItems.push(line);
+                            }
+                        }
                         const requiredChecks = ['auth_profile', 'matchmaking'];
                         const checkMap = new Map(
                             runtimeChecks
@@ -1386,6 +1694,23 @@ Requirements:
                         if (reviewJson.status === 'fail') {
                             if (blockingItems.length === 0) {
                                 throw new Error('INVALID_REVIEWER_SCHEMA: blocking_items required when status=fail');
+                            }
+                            const blockerSignature = runtimeBlockers.map((b) => b.id).sort().join('||');
+                            if (blockerSignature) {
+                                state.runtimeFlags = state.runtimeFlags || {};
+                                state.runtimeFlags.runtimeSignatureTracker = state.runtimeFlags.runtimeSignatureTracker || {};
+                                const seen = Number(state.runtimeFlags.runtimeSignatureTracker[blockerSignature] || 0) + 1;
+                                state.runtimeFlags.runtimeSignatureTracker[blockerSignature] = seen;
+                                if (seen > 3) {
+                                    const reason = `RUNTIME_BLOCKED_NONCODE: repeated runtime blocker signature '${blockerSignature}' persisted after ${seen} review cycles.`;
+                                    task.status = 'failed';
+                                    projectContextSummary += `\n- ${reason}`;
+                                    state.projectContextSummary = projectContextSummary;
+                                    await this._saveState(state);
+                                    yield { type: 'status', content: reason };
+                                    await this._finalizeWorkflowState(state, 'paused_or_failed');
+                                    return;
+                                }
                             }
                             yield { type: 'status', content: `Reviewer found issues. Creating a fix task.` };
                             const feedbackText = String(reviewJson.feedback || "");
@@ -1402,10 +1727,15 @@ Requirements:
                                 content: 'Applying fixes now. This recovery pass may take longer; progress updates will continue.'
                             };
                             const fixTaskId = `fix_${Date.now()}`;
+                            const runtimeBlockerLines = runtimeBlockers.map((b) => `- ${b.id}: ${b.message} (artifacts: ${b.artifacts.join(', ')})`);
                             state.tasks.push({
                                 id: fixTaskId,
                                 role: 'Coder',
-                                prompt: `Fix the following blocking issues raised by the Reviewer:\n${blockingItems.join('\n')}\n\nReviewer feedback: ${reviewJson.feedback}\nEvidence:\n${evidence.join('\n')}`,
+                                prompt: `Fix the following blocking issues raised by the Reviewer:\n${blockingItems.join('\n')}\n\n` +
+                                    (runtimeBlockerLines.length
+                                        ? `Mandatory runtime signature blockers (fix these first):\n${runtimeBlockerLines.join('\n')}\n\n`
+                                        : '') +
+                                    `Reviewer feedback: ${reviewJson.feedback}\nEvidence:\n${evidence.join('\n')}`,
                                 dependsOn: [],
                                 status: 'pending'
                             });
@@ -1421,6 +1751,9 @@ Requirements:
 
                             projectContextSummary += `\n- Reviewer found issues: ${reviewJson.feedback}. Fix task created.`;
                         } else {
+                            if (runtimeBlockers.length > 0) {
+                                throw new Error(`INVALID_REVIEWER_SCHEMA: pass status cannot include runtime blocker signatures (${runtimeBlockers.map((b) => b.id).join(', ')})`);
+                            }
                             if (missingChecks.length > 0) {
                                 throw new Error(`INVALID_REVIEWER_SCHEMA: missing runtime_checks: ${missingChecks.join(', ')}`);
                             }
@@ -1652,13 +1985,35 @@ Requirements:
             }
         }
 
-        if (state.tasks.every(t => t.status === 'completed')) {
+        const runEvents = Array.isArray(state?.runReport?.events) ? state.runReport.events : [];
+        const recoveredFailedTaskIds = new Set(
+            runEvents
+                .filter((e) => e && e.type === 'task_failed_recovered' && e.taskId)
+                .map((e) => String(e.taskId))
+        );
+        const hasPendingTasks = state.tasks.some((t) => t.status === 'pending');
+        const hasBlockingTaskStates = state.tasks.some((t) => {
+            const id = String(t?.id || '');
+            if (t.status === 'blocked') return true;
+            if (t.status === 'failed' && !recoveredFailedTaskIds.has(id)) return true;
+            return false;
+        });
+        const workflowTasksSettled = !hasPendingTasks && !hasBlockingTaskStates;
+
+        if (workflowTasksSettled) {
             if (this._hasBlockingPreviewProbeFailure(state)) {
                 projectContextSummary += `\n- WORKFLOW HALTED: Preview probe failed in this run; completion is blocked until runtime checks pass.`;
                 state.projectContextSummary = projectContextSummary;
                 yield {
                     type: 'status',
                     content: 'Workflow paused: preview probe failed. Completion is blocked until runtime checks pass.'
+                };
+                yield {
+                    type: 'text',
+                    content: this._buildOutcomeNotice(state, {
+                        completed: false,
+                        reason: 'Preview runtime checks failed'
+                    })
                 };
                 await this._finalizeWorkflowState(state, 'paused_or_failed');
                 return;
@@ -1669,6 +2024,13 @@ Requirements:
                 yield {
                     type: 'status',
                     content: 'Workflow paused: preview probe evidence missing for a runtime-verification run.'
+                };
+                yield {
+                    type: 'text',
+                    content: this._buildOutcomeNotice(state, {
+                        completed: false,
+                        reason: 'Runtime/browser evidence missing'
+                    })
                 };
                 await this._finalizeWorkflowState(state, 'paused_or_failed');
                 return;
@@ -1692,6 +2054,7 @@ Requirements:
             const summarizedHistory = history.length > 2 ? history.slice(-2) : history;
             const finalResponse = await geminiService.generateResponse(evolutionPrompt, summarizedHistory, "SUMMARIZER");
             yield { type: 'text', content: sanitizer.sanitize(`\n\n${finalResponse}`, credentials) };
+            yield { type: 'text', content: sanitizer.sanitize(`\n\n${this._buildOutcomeNotice(state, { completed: true })}`, credentials) };
             yield { type: 'text', content: "\n\n**Project workflow completed.** State saved to `.agent_state.json`." };
             await this._finalizeWorkflowState(state, 'completed');
         } else {
@@ -1700,6 +2063,13 @@ Requirements:
                 state.runReport.outcome = 'paused_or_failed';
             }
             yield { type: 'status', content: 'Workflow paused or interrupted.' };
+            yield {
+                type: 'text',
+                content: this._buildOutcomeNotice(state, {
+                    completed: false,
+                    reason: 'Pending/blocked tasks remain'
+                })
+            };
             await this._finalizeWorkflowState(state, 'paused_or_failed');
         }
     }

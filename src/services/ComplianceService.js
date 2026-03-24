@@ -335,6 +335,8 @@ class ComplianceService {
       dist_mentions_expected: false,
       source_match_files: [],
       dist_match_files: [],
+      source_placeholder_files: [],
+      dist_placeholder_files: [],
       reasons: []
     };
 
@@ -392,6 +394,22 @@ class ComplianceService {
       result.reasons.push('expected app id not found in source/config fallback path');
     }
 
+    for (const file of allSourceFiles) {
+      const rel = path.relative(workspacePath, file).replace(/\\/g, '/');
+      if (rel.startsWith('node_modules/') || rel.startsWith('dist/') || rel.startsWith('.git/')) continue;
+      try {
+        const txt = await fs.readFile(file, 'utf8');
+        if (/YOUR_APP_ID/i.test(txt)) {
+          result.source_placeholder_files.push(rel);
+        }
+      } catch {
+        // ignore unreadable source files
+      }
+    }
+    if (result.source_placeholder_files.length > 0) {
+      result.reasons.push(`source still contains placeholder YOUR_APP_ID (${result.source_placeholder_files.slice(0, 6).join(', ')})`);
+    }
+
     const distPath = path.join(workspacePath, 'dist');
     let distFiles = [];
     try {
@@ -419,6 +437,20 @@ class ComplianceService {
     result.dist_mentions_expected = result.dist_match_files.length > 0;
     if (!result.dist_mentions_expected) {
       result.reasons.push('expected app id not found in dist artifacts');
+    }
+
+    for (const file of distFiles) {
+      try {
+        const txt = await fs.readFile(file, 'utf8');
+        if (/YOUR_APP_ID/i.test(txt)) {
+          result.dist_placeholder_files.push(path.relative(workspacePath, file).replace(/\\/g, '/'));
+        }
+      } catch {
+        // ignore unreadable dist files
+      }
+    }
+    if (result.dist_placeholder_files.length > 0) {
+      result.reasons.push(`dist still contains placeholder YOUR_APP_ID (${result.dist_placeholder_files.slice(0, 6).join(', ')})`);
     }
 
     if (result.reasons.length === 0) {

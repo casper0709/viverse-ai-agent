@@ -126,11 +126,38 @@ class PreviewAutoTestService {
     let browserRun = null;
     const browserEnabled = String(process.env.VIVERSE_BROWSER_AUTOTEST || '1') !== '0';
     if (browserEnabled && reachable) {
-      browserRun = await browserRuntimeTestService.run({
-        workspacePath,
-        previewUrl: url,
-        credentials
-      });
+      const browserProbeTimeoutMs = Math.max(
+        30000,
+        Number(process.env.VIVERSE_BROWSER_PROBE_TIMEOUT_MS || 90000)
+      );
+      browserRun = await Promise.race([
+        browserRuntimeTestService.run({
+          workspacePath,
+          previewUrl: url,
+          credentials
+        }),
+        new Promise((resolve) => {
+          setTimeout(() => {
+            resolve({
+              status: 'fail',
+              reason: `browser_probe_timeout_${browserProbeTimeoutMs}ms`,
+              runtime_checks: [
+                {
+                  name: 'auth_profile',
+                  status: 'fail',
+                  proof: `Browser runtime probe timed out after ${browserProbeTimeoutMs}ms`
+                },
+                {
+                  name: 'matchmaking',
+                  status: 'fail',
+                  proof: `Browser runtime probe timed out after ${browserProbeTimeoutMs}ms`
+                }
+              ],
+              artifact_paths: []
+            });
+          }, browserProbeTimeoutMs);
+        })
+      ]);
       const browserArtifacts = Array.isArray(browserRun?.artifact_paths) ? browserRun.artifact_paths : [];
       const browserChecks = Array.isArray(browserRun?.runtime_checks) ? browserRun.runtime_checks : [];
       if (browserArtifacts.length) {

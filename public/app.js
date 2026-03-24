@@ -6,6 +6,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const mediaInput = document.getElementById('media-input');
     const attachmentPreview = document.getElementById('attachment-preview');
     const attachmentCount = document.getElementById('attachment-count');
+    const templateSelect = document.getElementById('template-select');
+    const templateMeta = document.getElementById('template-meta');
+    const refreshTemplatesBtn = document.getElementById('refresh-templates-btn');
+    const templateGenerateBtn = document.getElementById('template-generate-btn');
     const lowerPreview = document.getElementById('lower-preview');
     const worldIframe = document.getElementById('world-iframe');
     const closePreviewBtn = document.getElementById('close-preview');
@@ -22,6 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let savedCredentials = null;
     let pendingMessage = "";
     let pendingAttachments = [];
+    let templatesCatalog = [];
 
     const MAX_ATTACHMENTS = 4;
     const MAX_FILE_SIZE = 12 * 1024 * 1024;
@@ -139,17 +144,75 @@ document.addEventListener('DOMContentLoaded', () => {
         if (indicator) indicator.remove();
     }
 
+    function selectedTemplate() {
+        const id = String(templateSelect?.value || '').trim();
+        if (!id) return null;
+        return templatesCatalog.find((item) => String(item.id) === id) || null;
+    }
+
+    function renderTemplateMeta() {
+        const chosen = selectedTemplate();
+        if (!chosen) {
+            templateMeta.textContent = 'No template selected. Agent will run normal generation flow.';
+            return;
+        }
+        const tags = Array.isArray(chosen.tags) && chosen.tags.length ? chosen.tags.join(', ') : 'none';
+        const caps = Array.isArray(chosen.capabilities) && chosen.capabilities.length ? chosen.capabilities.join(', ') : 'none';
+        templateMeta.textContent = `Genre: ${chosen.genre || 'N/A'} | Tags: ${tags} | Capabilities: ${caps}`;
+    }
+
+    async function loadTemplates() {
+        try {
+            templateMeta.textContent = 'Loading templates...';
+            const res = await fetch('/api/ai/templates');
+            const data = await res.json();
+            templatesCatalog = Array.isArray(data?.templates) ? data.templates : [];
+            const selected = String(templateSelect.value || '');
+            templateSelect.innerHTML = '<option value="">No template (free generation)</option>';
+            templatesCatalog.forEach((item) => {
+                const option = document.createElement('option');
+                option.value = item.id;
+                option.textContent = `${item.name}${item.genre ? ` · ${item.genre}` : ''}`;
+                templateSelect.appendChild(option);
+            });
+            if (selected && templatesCatalog.some((item) => item.id === selected)) {
+                templateSelect.value = selected;
+            }
+            renderTemplateMeta();
+        } catch (error) {
+            templateMeta.textContent = `Failed to load templates: ${error.message}`;
+        }
+    }
+
+    function applyTemplateContextToMessage(message = '') {
+        const chosen = selectedTemplate();
+        if (!chosen) return message;
+        if (String(message || '').includes('Template Mode Enabled.')) return message;
+        return [
+            `Template Mode Enabled.`,
+            `Template ID: ${chosen.id}`,
+            `Template Name: ${chosen.name}`,
+            `Please generate using this template unless I explicitly request another template.`,
+            '',
+            `User Request:`,
+            message
+        ].join('\n');
+    }
+
     async function sendMessage(overrideMessage = null, isAutoSend = false) {
         // Fix for event listener passing PointerEvent as first arg
         const actualMessage = (overrideMessage && typeof overrideMessage === 'string') ? overrideMessage : userInput.value.trim();
-        const requestMessage = actualMessage || 'Please analyze the attached media.';
+        const requestMessageRaw = actualMessage || 'Please analyze the attached media.';
+        const requestMessage = applyTemplateContextToMessage(requestMessageRaw);
         if (!actualMessage && pendingAttachments.length === 0) return;
 
         if (!isAutoSend) {
             const attachmentLabel = pendingAttachments.length
                 ? `\n\nAttached media:\n${pendingAttachments.map((a) => `- ${a.name}`).join('\n')}`
                 : '';
-            appendMessage('user', `${actualMessage || '(media only)'}${attachmentLabel}`);
+            const chosen = selectedTemplate();
+            const templateTag = chosen ? `\n\nTemplate: ${chosen.id}` : '';
+            appendMessage('user', `${actualMessage || '(media only)'}${templateTag}${attachmentLabel}`);
         }
         userInput.value = '';
         userInput.style.height = 'auto';
@@ -297,6 +360,18 @@ document.addEventListener('DOMContentLoaded', () => {
     // Event Listeners
     sendBtn.addEventListener('click', sendMessage);
     attachBtn.addEventListener('click', () => mediaInput.click());
+    refreshTemplatesBtn.addEventListener('click', loadTemplates);
+    templateSelect.addEventListener('change', renderTemplateMeta);
+    templateGenerateBtn.addEventListener('click', () => {
+        const chosen = selectedTemplate();
+        if (!chosen) {
+            appendMessage('system', 'Select a template first.');
+            return;
+        }
+        userInput.value = `Create a new app using template '${chosen.id}'. Keep template structure intact and implement requested features.`;
+        userInput.dispatchEvent(new Event('input'));
+        userInput.focus();
+    });
     mediaInput.addEventListener('change', async (e) => {
         const files = Array.from(e.target.files || []);
         for (const file of files) {
@@ -394,4 +469,5 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     userInput.focus();
+    loadTemplates();
 });

@@ -19,6 +19,15 @@
       "severity": "high"
     },
     {
+      "id": "mp-setactor-capability-guard",
+      "profiles": ["multiplayer"],
+      "phases": ["gameplay", "fix"],
+      "type": "required_any",
+      "pattern": "setActor\\?\\.|if\\s*\\([^\\n\\)]*setActor[^\\)]*\\)",
+      "message": "setActor must be capability-guarded for SDK variants (optional chaining or explicit method guard).",
+      "severity": "high"
+    },
+    {
       "id": "mp-connect-signal-or-connect-call",
       "profiles": ["multiplayer"],
       "phases": ["gameplay", "fix"],
@@ -80,6 +89,15 @@
       "pattern": "getRooms\\s*\\(|getAvailableRooms\\s*\\(|joinRoom\\s*\\(",
       "message": "Room access compatibility path is missing (room list API or direct room join).",
       "severity": "medium"
+    },
+    {
+      "id": "mp-roomid-hard-guard-before-mpclient",
+      "profiles": ["multiplayer"],
+      "phases": ["gameplay", "fix"],
+      "type": "required_any",
+      "pattern": "roomId\\s*=.*\\|\\|.*\\|\\||if\\s*\\(!\\s*roomId\\s*\\)\\s*throw\\s+new\\s+Error\\s*\\(\\s*['\\\"`]roomId is required['\\\"`]",
+      "message": "MultiplayerClient initialization must normalize roomId and hard-fail when roomId is missing.",
+      "severity": "high"
     }
   ]
 }

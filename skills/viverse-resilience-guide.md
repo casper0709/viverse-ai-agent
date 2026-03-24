@@ -41,6 +41,8 @@
   if (client.on) client.on('event', cb);
   else if (client.addEventListener) client.addEventListener('event', cb);
   ```
+- **setActor Compatibility Guard**: Never call `mc.setActor(...)` blindly. Use `mc.setActor?.(...)` or explicit method checks and fail with a clear error when unavailable.
+- **Room ID Hard Guard**: Before `new MultiplayerClient(roomId, ...)`, normalize from `room.id || room.roomId || room.game_session`; if empty, throw `Error("roomId is required")` and stop scene init.
 
 ## 3. Build & Deployment (Grep Gate)
 
