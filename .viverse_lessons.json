@@ -2,5 +2,6 @@
   "Implement a retry loop (10x, 200ms) for Actor ID in onConnect and use null-safe fallback (e.g. (id || '').slice(-4)) for all string operations on user IDs to prevent runtime crashes.",
   "Robust Profile Fetch requires: 1200ms handshake, 2000ms Avatar SDK delay, then sequence: avatarSdk.getUserInfo -> auth.getUserInfo -> auth.getUser.",
   "Multiplayer sync for poker requires a 'Dealer' role (first actor) to initialize the deck and table state to avoid race conditions.",
-  "Profile normalization must include headIconUrl, head_icon_url, snapshot_url and existing avatar/photo/icon variants to pass the 'auth-avatar-field-normalization' gate."
+  "Profile normalization must include headIconUrl, head_icon_url, snapshot_url and existing avatar/photo/icon variants to pass the 'auth-avatar-field-normalization' gate.",
+  "The user provided a direct instruction to reply with 'OK'. I will comply with this plain text response as per the 'casual question' clause."
 ]

@@ -33,6 +33,7 @@ The agent auto-loads SKILL.md summaries on startup. When it detects a task match
 | [viverse-threejs-vanilla-foundation](./viverse-threejs-vanilla-foundation/) | Vanilla Three.js + VIVERSE integration foundation without React |
 | [viverse-leaderboard](./viverse-leaderboard/) | Global leaderboards via VIVERSE gameDashboard SDK |
 | [viverse-multiplayer](./viverse-multiplayer/) | Matchmaking & Play SDK — rooms, create/join, custom state sync |
+| [viverse-template-generation](./viverse-template-generation/) | File-backed template registry, contract enforcement, and certification workflow |
 | [viverse-world-publishing](./viverse-world-publishing/) | Publishing PlayCanvas projects to VIVERSE Worlds |
 | [vrma-animation-retargeting](./vrma-animation-retargeting/) | VRMA animation retargeting for VIVERSE avatars |
 

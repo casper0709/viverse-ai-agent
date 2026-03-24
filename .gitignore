@@ -12,3 +12,4 @@ test_*.jpg
 
 # VIVERSE Agent Temp Directories
 .viverse_workspaces/
+.tmp_*.mjs

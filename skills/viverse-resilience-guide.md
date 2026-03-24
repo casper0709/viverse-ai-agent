@@ -1,4 +1,4 @@
-# VIVERSE Hub Resilience Guide (v5.2 - Poker Edition Hardened)
+# VIVERSE Hub Resilience Guide (v5.3 - Avatar Hardened)
 
 > [!IMPORTANT]
 > **MANDATORY RELEASE BLOCKER CHECKLIST**
@@ -28,6 +28,7 @@
     - **Shotgun Constructor**: `new vSdk.avatar({ baseURL: "https://sdk-api.viverse.com/", accessToken: token, token: token, authorization: token })`.
     - Primary path: `avatar.getProfile()`.
     - Fallback path: `client.getUserInfo()` -> `client.getUser()` -> `client.getProfileByToken(token)`.
+- **Avatar Normalization**: To pass the `auth-avatar-field-normalization` gate, check for the following fields in order: `picture`, `headIconUrl`, `head_icon_url`, `avatar_url`, `snapshot_url`, `thumbnail_url`.
 
 ## 2. Matchmaking & Multiplayer (v4.2 Standards)
 

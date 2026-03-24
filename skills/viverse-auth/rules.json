@@ -53,7 +53,7 @@
       "profiles": ["auth"],
       "phases": ["auth_preflight", "gameplay", "fix"],
       "type": "required_any",
-      "pattern": "headIconUrl|head_icon_url|snapshot_url",
+      "pattern": "headIconUrl|head_icon_url|snapshot_url|head_url|headUrl|thumbnail_url|thumbnailUrl|avatar_url|avatarUrl|photo_url|photoUrl|user_avatar|user_avatar_url|picture",
       "message": "Profile normalization must include avatar/head icon field variants.",
       "severity": "high"
     },

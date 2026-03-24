@@ -311,6 +311,10 @@ class BrowserRuntimeTestService {
       await authPage.waitForTimeout(6000);
       const bodyText = await authPage.evaluate(() => (document?.body?.innerText || '').slice(0, 3000)).catch(() => '');
       const hasAuthError = /invalid|incorrect|failed|error/i.test(String(bodyText || ''));
+      const hasSignInUi = /\bsign in\b/i.test(String(bodyText || ''));
+      const hasRecaptchaUi = /recaptcha|not a bot/i.test(String(bodyText || ''));
+      const loginUrl = authPage.url();
+      const stillOnAccountLogin = isAccountLoginUrl(loginUrl);
       const cookies = await page.context().cookies().catch(() => []);
       const hasSessionCookie = Array.isArray(cookies) && cookies.some((c) => {
         const n = String(c?.name || '').toLowerCase();
@@ -318,13 +322,16 @@ class BrowserRuntimeTestService {
         return (d.includes('viverse.com') || d.includes('htcvive.com')) &&
           (n.includes('session') || n.includes('auth') || n.includes('token') || n.includes('_htc'));
       });
-      if (hasSessionCookie && !hasAuthError) {
+      const loginContextHealthy = !stillOnAccountLogin && !hasSignInUi;
+      if (hasSessionCookie && !hasAuthError && loginContextHealthy) {
         result.ok = true;
         result.reason = 'login_success_cookie_present';
+      } else if (stillOnAccountLogin && (hasSignInUi || hasRecaptchaUi)) {
+        result.reason = 'login_blocked_on_account_signin';
       } else {
         result.reason = hasAuthError ? 'auth_error_text_detected' : 'no_session_cookie';
       }
-      result.loginUrl = authPage.url();
+      result.loginUrl = loginUrl;
       result.bodySnippet = bodyText;
       if (artifactsDir) {
         const loginShot = path.join(artifactsDir, 'login.png');

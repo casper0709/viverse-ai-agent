@@ -1,6 +1,8 @@
 import geminiService from '../services/GeminiService.js';
 import orchestratorService from '../services/OrchestratorService.js';
 import fileService from '../services/FileService.js';
+import templateRegistryService from '../services/templates/TemplateRegistryService.js';
+import templateContractService from '../services/templates/TemplateContractService.js';
 import logger from '../utils/logger.js';
 import fs from 'fs/promises';
 import path from 'path';
@@ -19,7 +21,7 @@ const EXTRA_DOC_MIME_TYPES = new Set([
     'application/json',
     'text/csv'
 ]);
-const TEMPLATE_CATALOG = [
+const TEMPLATE_CATALOG_FALLBACK = [
     {
         id: 'battletanks-v1',
         name: 'BattleTanks Base Template',
@@ -44,7 +46,7 @@ const TEMPLATE_CATALOG = [
 
 const isExecutionIntent = (message = '') => {
     const text = String(message || '').toLowerCase();
-    return /(resume|continue|proceed|fix|debug|error|bug|issue|retest|test|build|publish|run|orchestrator|req_\d+)/.test(text);
+    return /(resume|continue|proceed|fix|debug|error|bug|issue|retest|test|build|publish|run|req_\d+)/.test(text);
 };
 
 const isLatestAppQuery = (message = '') => {
@@ -142,6 +144,11 @@ const classifyIntentLocally = (message = '') => {
 
     // Explicit execution / project continuation always routes to orchestrator.
     if (isExecutionIntent(text)) return 'PROJECT';
+
+    // Capability/skills introspection should stay in conversational path.
+    if (/\b(share|list|show|what are|which are)\b.*\b(skill|skills|capability|capabilities)\b/.test(text)) {
+        return 'GENERAL';
+    }
 
     const projectSignals = [
         /\b(build|create|generate|implement|code|publish|deploy|fix|debug|bug|error|stack trace|exception)\b/,
@@ -251,7 +258,7 @@ export const chat = async (req, res) => {
             let responseStream;
             if (isGeneral) {
                 res.write(`data: ${JSON.stringify({ type: 'status', content: 'Answering general question...' })}\n\n`);
-                responseStream = geminiService.generateResponseStream(message, history || [], "ORCHESTRATOR", null, media);
+                responseStream = geminiService.generateResponseStream(message, history || [], "GENERAL", null, media);
             } else {
                 const enrichedMessage = `${message}${buildAttachmentSummary(media)}`;
                 responseStream = orchestratorService.processRequest(enrichedMessage, history || [], credentials, media);
@@ -267,7 +274,9 @@ export const chat = async (req, res) => {
             return res.end();
         }
 
-        const response = await geminiService.generateResponse(message, history || [], "ORCHESTRATOR", null, media);
+        const localIntent = classifyIntentLocally(message);
+        const roleKey = localIntent === 'GENERAL' ? 'GENERAL' : 'ORCHESTRATOR';
+        const response = await geminiService.generateResponse(message, history || [], roleKey, null, media);
 
         res.status(200).json({
             success: true,
@@ -312,20 +321,32 @@ export const healthCheck = (req, res) => {
 };
 
 export const listTemplates = async (req, res) => {
-    const templates = TEMPLATE_CATALOG.map((item) => ({
-        id: item.id,
-        name: item.name,
-        version: item.version,
-        genre: item.genre,
-        description: item.description,
-        tags: item.tags,
-        capabilities: item.capabilities
-    }));
-    res.status(200).json({
-        success: true,
-        count: templates.length,
-        templates
-    });
+    try {
+        let templates = await templateRegistryService.listTemplates();
+        if (!templates.length) {
+            templates = TEMPLATE_CATALOG_FALLBACK;
+        }
+        const normalized = templates.map((item) => ({
+            id: item.id,
+            name: item.name,
+            version: item.version,
+            genre: item.genre,
+            description: item.description,
+            tags: item.tags,
+            capabilities: item.capabilities,
+            status: item.status || 'active'
+        }));
+
+        res.status(200).json({
+            success: true,
+            count: normalized.length,
+            templates: normalized,
+            source: templates === TEMPLATE_CATALOG_FALLBACK ? 'fallback' : 'registry'
+        });
+    } catch (error) {
+        logger.error(`listTemplates failed: ${error.message}`);
+        res.status(500).json({ success: false, error: 'Failed to load templates' });
+    }
 };
 
 export const getTemplateById = async (req, res) => {
@@ -333,9 +354,28 @@ export const getTemplateById = async (req, res) => {
     if (!templateId) {
         return res.status(400).json({ success: false, error: 'templateId is required' });
     }
-    const found = TEMPLATE_CATALOG.find((item) => item.id.toLowerCase() === templateId);
+    let found = await templateRegistryService.getTemplateById(templateId);
+    if (!found) {
+        found = TEMPLATE_CATALOG_FALLBACK.find((item) => item.id.toLowerCase() === templateId) || null;
+    }
     if (!found) {
         return res.status(404).json({ success: false, error: `Template not found: ${templateId}` });
     }
-    return res.status(200).json({ success: true, template: found });
+
+    let contractSummary = null;
+    if (found?.templatePath) {
+        const absoluteTemplatePath = path.resolve(process.cwd(), found.templatePath);
+        const loaded = await templateContractService.loadTemplateContract(absoluteTemplatePath);
+        if (loaded?.contract) {
+            const c = loaded.contract;
+            contractSummary = {
+                id: c.id,
+                version: c.version,
+                immutablePathsCount: c.immutablePaths.length,
+                editablePathsCount: c.editablePaths.length,
+                requiredGates: c.requiredGates
+            };
+        }
+    }
+    return res.status(200).json({ success: true, template: found, contractSummary });
 };
