@@ -3,12 +3,15 @@ import path from 'path';
 import logger from '../utils/logger.js';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import templateEnforcementService from './templates/TemplateEnforcementService.js';
 
 class FileService {
     constructor() {
         // Base directory for allowed file operations (portable for cloud deployment)
         this.baseDir = process.env.VIVERSE_PROJECTS_DIR || process.cwd();
         this.invalidAuthCache = new Map();
+        this.templateContextByWorkspace = new Map();
+        this.templateViolationsByWorkspace = new Map();
     }
 
     _redactSensitiveText(input = "") {
@@ -119,6 +122,41 @@ class FileService {
         return cmd;
     }
 
+    _isValidAppId(appId = "") {
+        const v = String(appId || "").trim().toLowerCase();
+        return /^[a-z0-9]{10}$/.test(v) && /\d/.test(v);
+    }
+
+    _extractEnvAppId(envText = "") {
+        const text = String(envText || "");
+        const match = text.match(/(^|\n)\s*VITE_VIVERSE_CLIENT_ID\s*=\s*([a-z0-9]{10})\s*($|\n)/i);
+        const candidate = String(match?.[2] || "").toLowerCase();
+        return this._isValidAppId(candidate) ? candidate : "";
+    }
+
+    _rewriteEnvAppId(envText = "", appId = "") {
+        const text = String(envText || "");
+        const normalized = String(appId || "").toLowerCase();
+        const line = `VITE_VIVERSE_CLIENT_ID=${normalized}`;
+        if (/(^|\n)\s*VITE_VIVERSE_CLIENT_ID\s*=.*($|\n)/i.test(text)) {
+            return text.replace(/(^|\n)\s*VITE_VIVERSE_CLIENT_ID\s*=.*(?=\n|$)/i, `$1${line}`);
+        }
+        return text.endsWith('\n') || text.length === 0 ? `${text}${line}\n` : `${text}\n${line}\n`;
+    }
+
+    async _readAuthoritativeAppIdFromState(workspacePath = "") {
+        const ws = String(workspacePath || "").trim();
+        if (!ws) return "";
+        try {
+            const raw = await fs.readFile(path.join(ws, '.agent_state.json'), 'utf8');
+            const parsed = JSON.parse(raw);
+            const fromState = String(parsed?.runtimeFlags?.appIdAuthority?.value || "").toLowerCase();
+            return this._isValidAppId(fromState) ? fromState : "";
+        } catch {
+            return "";
+        }
+    }
+
     /**
      * Resolve and validate path is strictly within the allowed parameter
      */
@@ -134,6 +172,47 @@ class FileService {
             throw new Error(`CRITICAL SECURITY ALERT: Path ${targetPath} is strictly forbidden outside of sandbox ${allowedDir}`);
         }
         return absolutePath;
+    }
+
+    setWorkspaceTemplateContext(workspacePath, context = null) {
+        const key = String(workspacePath || '').trim();
+        if (!key) return;
+        if (!context || typeof context !== 'object') {
+            this.templateContextByWorkspace.delete(key);
+            return;
+        }
+        this.templateContextByWorkspace.set(key, context);
+    }
+
+    getWorkspaceTemplateContext(workspacePath) {
+        const key = String(workspacePath || '').trim();
+        if (!key) return null;
+        return this.templateContextByWorkspace.get(key) || null;
+    }
+
+    clearWorkspaceTemplateContext(workspacePath) {
+        const key = String(workspacePath || '').trim();
+        if (!key) return;
+        this.templateContextByWorkspace.delete(key);
+    }
+
+    _recordTemplateViolation(workspacePath, violation = {}) {
+        const key = String(workspacePath || '').trim();
+        if (!key) return;
+        const list = this.templateViolationsByWorkspace.get(key) || [];
+        list.push({
+            at: new Date().toISOString(),
+            ...violation
+        });
+        this.templateViolationsByWorkspace.set(key, list);
+    }
+
+    consumeTemplateViolations(workspacePath) {
+        const key = String(workspacePath || '').trim();
+        if (!key) return [];
+        const list = this.templateViolationsByWorkspace.get(key) || [];
+        this.templateViolationsByWorkspace.delete(key);
+        return list;
     }
 
     async readFile(filePath, workspacePath) {
@@ -165,11 +244,68 @@ class FileService {
         }
     }
 
-    async writeFile(filePath, content, workspacePath) {
+    async writeFile(filePath, content, workspacePath, options = {}) {
         try {
             const resolvedPath = this.resolvePath(filePath, workspacePath || this.baseDir);
+            const baseName = path.basename(resolvedPath);
+            let nextContent = String(content ?? "");
+            const skipTemplateEnforcement = !!options?.skipTemplateEnforcement;
+
+            const ws = workspacePath || this.baseDir;
+            const relPath = path.relative(ws, resolvedPath).replace(/\\/g, '/');
+            const isInternalStateFile =
+                relPath === '.agent_state.json' ||
+                relPath === 'run_report.json' ||
+                relPath === '.viverse_lessons.json';
+
+            if (!skipTemplateEnforcement && !isInternalStateFile) {
+                const ctx = this.getWorkspaceTemplateContext(ws);
+                if (ctx?.contract && String(ctx?.enforcementMode || 'enforce').toLowerCase() === 'enforce') {
+                    const decision = templateEnforcementService.evaluateWrite({
+                        contract: ctx.contract,
+                        absolutePath: resolvedPath,
+                        workspacePath: ws
+                    });
+                    if (!decision.allowed) {
+                        const violation = {
+                            templateId: String(ctx.templateId || ''),
+                            reason: String(decision.reason || 'template_contract_violation'),
+                            filePath: relPath,
+                            mode: 'enforce'
+                        };
+                        this._recordTemplateViolation(ws, violation);
+                        throw new Error(`TEMPLATE_CONTRACT_VIOLATION: ${violation.reason}: ${violation.filePath}`);
+                    }
+                }
+            }
+
+            // Guardrail: preserve an already-valid App ID in .env files so iterative fix steps
+            // cannot regress previously working publish/auth wiring.
+            if (baseName === '.env') {
+                let existingText = '';
+                try {
+                    existingText = await fs.readFile(resolvedPath, 'utf8');
+                } catch {
+                    existingText = '';
+                }
+
+                const existingId = this._extractEnvAppId(existingText);
+                const incomingId = this._extractEnvAppId(nextContent);
+                const incomingHasVar = /(^|\n)\s*VITE_VIVERSE_CLIENT_ID\s*=/i.test(nextContent);
+                const authorityId = await this._readAuthoritativeAppIdFromState(ws);
+                const canonicalId = existingId || authorityId;
+
+                if (canonicalId && incomingId && incomingId !== canonicalId) {
+                    logger.warn(`FileService.writeFile: preserving authoritative .env App ID '${canonicalId}' over incoming '${incomingId}'.`);
+                    nextContent = this._rewriteEnvAppId(nextContent, canonicalId);
+                } else if (canonicalId && (!incomingId || !incomingHasVar)) {
+                    logger.warn(`FileService.writeFile: restoring missing/invalid VITE_VIVERSE_CLIENT_ID with authoritative '${canonicalId}'.`);
+                    nextContent = this._rewriteEnvAppId(nextContent, canonicalId);
+                }
+            }
+
             await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
-            await fs.writeFile(resolvedPath, content, 'utf8');
+            await fs.writeFile(resolvedPath, nextContent, 'utf8');
             return { success: true, path: filePath };
         } catch (error) {
             logger.error(`FileService.writeFile Error: ${error.message}`);

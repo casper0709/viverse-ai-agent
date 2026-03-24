@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "battletanks-v1 scenario",
+  "type": "object",
+  "required": ["templateId", "rulesetId", "mode", "leaderboard"],
+  "properties": {
+    "templateId": {
+      "type": "string",
+      "const": "battletanks-v1"
+    },
+    "rulesetId": {
+      "$ref": "#/definitions/rulesetRef"
+    },
+    "mode": {
+      "type": "object",
+      "required": ["roundSeconds", "targetScore", "respawnPolicy"],
+      "properties": {
+        "roundSeconds": { "type": "integer", "minimum": 30, "maximum": 3600 },
+        "targetScore": { "type": "integer", "minimum": 1, "maximum": 99999 },
+        "respawnPolicy": { "type": "string", "enum": ["immediate", "wave", "none"] }
+      },
+      "additionalProperties": false
+    },
+    "leaderboard": {
+      "type": "object",
+      "required": ["apiName", "metric"],
+      "properties": {
+        "apiName": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+        "metric": { "type": "string", "enum": ["score", "kills", "survival_time"] }
+      },
+      "additionalProperties": false
+    },
+    "ui": {
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "maxLength": 80 },
+        "theme": {
+          "type": "object",
+          "properties": {
+            "primary": { "type": "string" },
+            "secondary": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "definitions": {
+    "rulesetRef": {
+      "type": "string",
+      "enum": ["default", "fast-rounds"]
+    }
+  },
+  "additionalProperties": false
+}

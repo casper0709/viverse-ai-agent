@@ -331,9 +331,10 @@ class ComplianceService {
       status: 'fail',
       expected_app_id: String(expectedAppId || '').trim().toLowerCase(),
       env_app_id: '',
-      source_mentions_expected: false,
+      source_uses_env_client_id: false,
       dist_mentions_expected: false,
-      source_match_files: [],
+      source_env_ref_files: [],
+      source_hardcoded_app_id_files: [],
       dist_match_files: [],
       source_placeholder_files: [],
       dist_placeholder_files: [],
@@ -376,34 +377,40 @@ class ComplianceService {
       ? sourceFiles
       : await this._listFilesRecursive(workspacePath);
 
+    const sourceFilesWithText = [];
     for (const file of allSourceFiles) {
       const rel = path.relative(workspacePath, file).replace(/\\/g, '/');
       if (rel.startsWith('node_modules/') || rel.startsWith('dist/') || rel.startsWith('.git/')) continue;
       try {
         const txt = await fs.readFile(file, 'utf8');
-        if (txt.includes(expected)) {
-          result.source_match_files.push(rel);
-        }
+        sourceFilesWithText.push({ rel, txt });
       } catch {
         // ignore unreadable source files
       }
     }
 
-    result.source_mentions_expected = result.source_match_files.length > 0;
-    if (!result.source_mentions_expected) {
-      result.reasons.push('expected app id not found in source/config fallback path');
+    for (const { rel, txt } of sourceFilesWithText) {
+      if (/import\.meta\.env\.VITE_VIVERSE_CLIENT_ID|process\.env\.VITE_VIVERSE_CLIENT_ID/.test(txt)) {
+        result.source_env_ref_files.push(rel);
+      }
+    }
+    result.source_uses_env_client_id = result.source_env_ref_files.length > 0;
+    if (!result.source_uses_env_client_id) {
+      result.reasons.push('source does not reference VITE_VIVERSE_CLIENT_ID via env (import.meta.env/process.env)');
     }
 
-    for (const file of allSourceFiles) {
-      const rel = path.relative(workspacePath, file).replace(/\\/g, '/');
-      if (rel.startsWith('node_modules/') || rel.startsWith('dist/') || rel.startsWith('.git/')) continue;
-      try {
-        const txt = await fs.readFile(file, 'utf8');
-        if (/YOUR_APP_ID/i.test(txt)) {
-          result.source_placeholder_files.push(rel);
-        }
-      } catch {
-        // ignore unreadable source files
+    for (const { rel, txt } of sourceFilesWithText) {
+      if (txt.includes(expected) && !/\.env(\.|$)/i.test(rel) && !/vite\.config\.(js|ts|mjs|cjs)$/i.test(rel)) {
+        result.source_hardcoded_app_id_files.push(rel);
+      }
+    }
+    if (result.source_hardcoded_app_id_files.length > 0) {
+      result.reasons.push(`source contains hardcoded app id literal (${result.source_hardcoded_app_id_files.slice(0, 6).join(', ')})`);
+    }
+
+    for (const { rel, txt } of sourceFilesWithText) {
+      if (/YOUR_APP_ID/i.test(txt)) {
+        result.source_placeholder_files.push(rel);
       }
     }
     if (result.source_placeholder_files.length > 0) {

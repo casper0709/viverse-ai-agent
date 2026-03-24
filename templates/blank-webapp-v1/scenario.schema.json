@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "blank-webapp-v1 scenario",
+  "type": "object",
+  "required": ["templateId", "rulesetId"],
+  "properties": {
+    "templateId": { "type": "string", "const": "blank-webapp-v1" },
+    "rulesetId": { "$ref": "#/definitions/rulesetRef" }
+  },
+  "definitions": {
+    "rulesetRef": {
+      "type": "string",
+      "enum": ["default"]
+    }
+  },
+  "additionalProperties": true
+}

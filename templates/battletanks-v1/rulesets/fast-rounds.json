@@ -1,0 +1,29 @@
+{
+  "id": "fast-rounds",
+  "name": "Fast Rounds",
+  "description": "Shorter rounds with quicker scoring to keep matches brisk.",
+  "scoring": {
+    "kill": 150,
+    "assist": 50,
+    "deathPenalty": 0
+  },
+  "winCondition": {
+    "type": "targetScore",
+    "targetScore": 1200
+  },
+  "respawn": {
+    "policy": "immediate",
+    "seconds": 2
+  },
+  "powerups": {
+    "enabled": true,
+    "spawnIntervalSeconds": 12
+  },
+  "round": {
+    "seconds": 300
+  },
+  "map": {
+    "preset": "maze-layout-v1",
+    "layoutRef": "../gameplay/maze-layout.json"
+  }
+}

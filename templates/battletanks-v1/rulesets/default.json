@@ -1,0 +1,29 @@
+{
+  "id": "default",
+  "name": "Default BattleTanks Rules",
+  "description": "Balanced default settings for standard matches.",
+  "scoring": {
+    "kill": 100,
+    "assist": 25,
+    "deathPenalty": 0
+  },
+  "winCondition": {
+    "type": "targetScore",
+    "targetScore": 2000
+  },
+  "respawn": {
+    "policy": "immediate",
+    "seconds": 3
+  },
+  "powerups": {
+    "enabled": true,
+    "spawnIntervalSeconds": 20
+  },
+  "round": {
+    "seconds": 600
+  },
+  "map": {
+    "preset": "maze-layout-v1",
+    "layoutRef": "../gameplay/maze-layout.json"
+  }
+}

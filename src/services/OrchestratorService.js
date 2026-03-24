@@ -2,6 +2,9 @@ import geminiService from './GeminiService.js';
 import fileService from './FileService.js';
 import complianceService from './ComplianceService.js';
 import previewAutoTestService from './PreviewAutoTestService.js';
+import templateRegistryService from './templates/TemplateRegistryService.js';
+import templateContractService from './templates/TemplateContractService.js';
+import templateCertificationService from './templates/TemplateCertificationService.js';
 import logger from '../utils/logger.js';
 import fs from 'fs/promises';
 import path from 'path';
@@ -17,6 +20,146 @@ class OrchestratorService {
         this.maxComplianceFixAttemptsPerSignature = 2;
         this.maxAutoTestFixAttemptsPerSignature = 2;
         this.maxAuthPreflightFixAttemptsPerSignature = 2;
+    }
+
+    _isFixTask(task = {}) {
+        const id = String(task?.id || '');
+        const prompt = String(task?.prompt || '');
+        return (
+            /^fix_|^c_fix_|^autotest_fix_|^authfix_|^preflight_fix_/i.test(id) ||
+            /fix the following|runtime_fix required|compliance fix required|reviewer blocked/i.test(prompt)
+        );
+    }
+
+    _isStrictFixOnlyMessage(message = "") {
+        const t = String(message || "").toLowerCase();
+        const asksResume = /^(resume|continue|proceed)\b/.test(t);
+        const asksFix = /\b(fix|patch|harden|regression|issue|error|bug)\b/.test(t);
+        const asksNewBuild = /\b(new app|create app|generate app|from scratch|new template)\b/.test(t);
+        return asksResume && asksFix && !asksNewBuild;
+    }
+
+    _ensureRuntimeFlagsShape(state) {
+        state.runtimeFlags = state.runtimeFlags || {};
+        state.runtimeFlags.authInvalid = !!state.runtimeFlags.authInvalid;
+        state.runtimeFlags.appIdAuthority = state.runtimeFlags.appIdAuthority || {
+            value: "",
+            source: "",
+            updatedAt: ""
+        };
+        state.runtimeFlags.baselineContract = state.runtimeFlags.baselineContract || {
+            capturedAt: "",
+            sourceTaskId: "",
+            runtimeChecks: {},
+            runtimeBlockersAbsent: [
+                'runtime-app-id-placeholder',
+                'runtime-checkauth-ack-unhandled',
+                'runtime-setactor-missing-method',
+                'runtime-roomid-missing'
+            ],
+            appIdMustNotBePlaceholder: true
+        };
+    }
+
+    _captureBaselineContractFromRuntimeChecks(state, { runtimeChecks = [], sourceTaskId = '', source = '' } = {}) {
+        this._ensureRuntimeFlagsShape(state);
+        const map = new Map(
+            (Array.isArray(runtimeChecks) ? runtimeChecks : [])
+                .filter((c) => c && typeof c === 'object' && c.name)
+                .map((c) => [String(c.name).toLowerCase(), String(c.status || '').toLowerCase()])
+        );
+        const auth = map.get('auth_profile');
+        const mm = map.get('matchmaking');
+        if (auth !== 'pass' || mm !== 'pass') return false;
+
+        state.runtimeFlags.baselineContract = {
+            ...state.runtimeFlags.baselineContract,
+            capturedAt: new Date().toISOString(),
+            sourceTaskId: String(sourceTaskId || ''),
+            source: String(source || ''),
+            runtimeChecks: {
+                auth_profile: 'pass',
+                matchmaking: 'pass'
+            },
+            runtimeBlockersAbsent: [
+                'runtime-app-id-placeholder',
+                'runtime-checkauth-ack-unhandled',
+                'runtime-setactor-missing-method',
+                'runtime-roomid-missing'
+            ],
+            appIdMustNotBePlaceholder: true
+        };
+        return true;
+    }
+
+    _buildFixScopeAndBaselineGuard(state, { issueLines = [] } = {}) {
+        const issues = (Array.isArray(issueLines) ? issueLines : []).filter(Boolean);
+        const baseline = state?.runtimeFlags?.baselineContract || {};
+        const hasBaseline =
+            String(baseline?.runtimeChecks?.auth_profile || '').toLowerCase() === 'pass' &&
+            String(baseline?.runtimeChecks?.matchmaking || '').toLowerCase() === 'pass';
+        const baselineLine = hasBaseline
+            ? `- Baseline contract is ACTIVE (captured at ${baseline.capturedAt || 'unknown time'} from ${baseline.source || 'runtime pass'}). Auth and matchmaking MUST remain PASS after this fix.`
+            : '- Baseline contract not yet captured; preserve existing auth/bootstrap/matchmaking behavior unless directly required by blocker evidence.';
+        return [
+            'FIX SCOPE LOCK (MANDATORY):',
+            '- Apply a minimal patch. Do NOT rewrite healthy modules.',
+            '- Change ONLY code required to resolve listed blocking issues.',
+            '- If touching auth/bootstrap files, keep existing successful login/profile behavior intact.',
+            '- If touching multiplayer files, preserve roomId normalization and API capability guards.',
+            baselineLine,
+            '- Before finishing, self-verify no placeholder App ID ("YOUR_APP_ID") is introduced and no known runtime blocker signatures reappear.',
+            issues.length ? `- Blocking issue list authority:\n${issues.map((l) => `  ${l}`).join('\n')}` : ''
+        ].filter(Boolean).join('\n');
+    }
+
+    _evaluateBaselineRegressions({ state, runtimeChecks = [], runtimeBlockers = [] } = {}) {
+        const regressions = [];
+        const baseline = state?.runtimeFlags?.baselineContract || {};
+        const hasBaseline =
+            String(baseline?.runtimeChecks?.auth_profile || '').toLowerCase() === 'pass' &&
+            String(baseline?.runtimeChecks?.matchmaking || '').toLowerCase() === 'pass';
+        if (!hasBaseline) return regressions;
+
+        const map = new Map(
+            (Array.isArray(runtimeChecks) ? runtimeChecks : [])
+                .filter((c) => c && typeof c === 'object' && c.name)
+                .map((c) => [String(c.name).toLowerCase(), String(c.status || '').toLowerCase()])
+        );
+        const requiredChecks = ['auth_profile', 'matchmaking'];
+        for (const name of requiredChecks) {
+            const status = map.get(name);
+            if (status !== 'pass') {
+                regressions.push(`baseline-regression:${name}:${status || 'missing'}`);
+            }
+        }
+
+        const blockerIds = new Set((Array.isArray(runtimeBlockers) ? runtimeBlockers : []).map((b) => String(b.id || '')));
+        for (const id of Array.isArray(baseline.runtimeBlockersAbsent) ? baseline.runtimeBlockersAbsent : []) {
+            if (blockerIds.has(id)) regressions.push(`baseline-regression:blocker:${id}`);
+        }
+        return regressions;
+    }
+
+    _isoMs(iso = '') {
+        const n = Date.parse(String(iso || ''));
+        return Number.isFinite(n) ? n : 0;
+    }
+
+    _hasRuntimeRevalidationAfterLatestFix(state) {
+        const flags = state?.runtimeFlags || {};
+        const lastFixMs = this._isoMs(flags.lastFixTaskCompletedAt);
+        if (!lastFixMs) return true;
+        const reviewerPassMs = this._isoMs(flags.lastReviewerPassAt);
+        const previewPassMs = this._isoMs(flags.lastPreviewProbePassAt);
+        return Math.max(reviewerPassMs, previewPassMs) >= lastFixMs;
+    }
+
+    _hasUnresolvedAppIdPlaceholder(summary = '') {
+        const t = String(summary || '');
+        if (/authoritative_app_id:\s*unresolved/i.test(t)) return true;
+        if (/app id authority:\s*your_app_id/i.test(t)) return true;
+        return false;
     }
 
     _hasComplianceSuccessClaim(text = "") {
@@ -131,6 +274,7 @@ class OrchestratorService {
         const artifacts = Array.isArray(probe?.artifact_paths) ? probe.artifact_paths : [];
         const previewUrl = String(probe?.preview_url_tested || '');
         const lines = failedChecks.map((c) => `- ${c.name}: ${c.proof || 'failed'}`).join('\n');
+        const scopeGuard = this._buildFixScopeAndBaselineGuard(state, { issueLines: failedChecks.map((c) => `- ${c.name}: ${c.proof || 'failed'}`) });
         state.tasks.push({
             id: fixTaskId,
             role: 'Coder',
@@ -147,7 +291,9 @@ Requirements:
 1) Fix runtime causes for failed checks (auth_profile and/or matchmaking).
 2) Keep App ID/SDK wiring deterministic and compliant.
 3) Rebuild if source/env changed.
-4) If publish flow is part of this task, ensure next pass can regenerate preview evidence.`,
+4) If publish flow is part of this task, ensure next pass can regenerate preview evidence.
+
+${scopeGuard}`,
             dependsOn: [],
             status: 'pending'
         });
@@ -290,9 +436,6 @@ Requirements:
         const fromState = String(state?.runtimeFlags?.appIdAuthority?.value || "").toLowerCase();
         if (this._isValidAppId(fromState)) return fromState;
 
-        const fromContext = this._extractCanonicalAppId(contextText);
-        if (this._setAppIdAuthority(state, fromContext, "context")) return fromContext;
-
         try {
             const envText = await fs.readFile(path.join(workspacePath, '.env'), 'utf8');
             const envMatch = envText.match(/(^|\n)\s*VITE_VIVERSE_CLIENT_ID\s*=\s*([a-z0-9]{10})\s*($|\n)/i);
@@ -302,7 +445,62 @@ Requirements:
             // ignore
         }
 
+        const fromContext = this._extractCanonicalAppId(contextText);
+        if (this._setAppIdAuthority(state, fromContext, "context")) return fromContext;
+
         return "";
+    }
+
+    async _checkAppIdIntegrity(state, workspacePath, contextText = "") {
+        const expectedAppId = await this._resolveAppIdAuthority(state, workspacePath, contextText);
+        if (!expectedAppId) {
+            return { ok: false, reason: 'App ID authority is missing. Cannot verify propagation safely.' };
+        }
+
+        let envId = "";
+        try {
+            const envText = await fs.readFile(path.join(workspacePath, '.env'), 'utf8');
+            const envMatch = envText.match(/(^|\n)\s*VITE_VIVERSE_CLIENT_ID\s*=\s*([a-z0-9]{10})\s*($|\n)/i);
+            envId = String(envMatch?.[2] || "").toLowerCase();
+        } catch {
+            // ignore
+        }
+
+        if (!this._isValidAppId(envId)) {
+            return { ok: false, reason: 'App ID integrity check failed: .env is missing a valid VITE_VIVERSE_CLIENT_ID.' };
+        }
+
+        if (envId !== expectedAppId) {
+            return {
+                ok: false,
+                reason: `App ID integrity check failed: authority (${expectedAppId}) does not match .env (${envId}).`
+            };
+        }
+
+        const propagation = await complianceService.verifyAppIdPropagation({
+            workspacePath,
+            expectedAppId
+        });
+        state.runtimeFlags = state.runtimeFlags || {};
+        state.runtimeFlags.lastPropagationCheck = {
+            at: new Date().toISOString(),
+            expectedAppId,
+            status: propagation.status,
+            reasons: Array.isArray(propagation.reasons) ? propagation.reasons : []
+        };
+
+        if (propagation.status !== 'pass') {
+            const reasons = Array.isArray(propagation.reasons) && propagation.reasons.length
+                ? propagation.reasons.join(' | ')
+                : 'unknown propagation mismatch';
+            return {
+                ok: false,
+                reason: `Deterministic App ID propagation check failed. ${reasons}`,
+                details: propagation
+            };
+        }
+
+        return { ok: true, expectedAppId, details: propagation };
     }
 
     _extractPreviewUrl(text = "") {
@@ -415,12 +613,12 @@ Requirements:
         return null;
     }
 
-    _enforceWorkflowTasks(tasks = [], { message = "" } = {}) {
+    _enforceWorkflowTasks(tasks = [], { message = "", skipWorkflowExpansion = false } = {}) {
         let out = [...tasks];
         const ids = new Set(out.map((t) => t.id));
 
         // Phase 1.6: Inject auth preflight before full coder flow when auth is relevant.
-        if (this._isAuthRelevant(message)) {
+        if (!skipWorkflowExpansion && this._isAuthRelevant(message)) {
             const hasPreflight = out.some((t) => t.id === "auth_preflight" || /\bauth preflight\b/i.test(String(t.prompt || "")));
             if (!hasPreflight) {
                 const architect = this._firstTaskByRole(out, "Architect");
@@ -586,6 +784,255 @@ Requirements:
         });
     }
 
+    _extractTemplateIdFromText(text = '', knownTemplateIds = []) {
+        const raw = String(text || '');
+        if (!raw.trim()) return '';
+        const lower = raw.toLowerCase();
+        for (const id of knownTemplateIds) {
+            if (!id) continue;
+            const k = String(id).toLowerCase();
+            if (lower.includes(`template '${k}'`) || lower.includes(`template "${k}"`) || lower.includes(k)) {
+                return k;
+            }
+        }
+        const quoted = lower.match(/\btemplate\s*[:=]?\s*['"]?([a-z0-9-]+)['"]?/i)?.[1] || '';
+        return quoted;
+    }
+
+    async _workspaceHasTemplateSurface(workspacePath = '', contract = null) {
+        const ws = String(workspacePath || '').trim();
+        if (!ws || !contract) return false;
+        const rules = [
+            ...(Array.isArray(contract.immutablePaths) ? contract.immutablePaths : []),
+            ...(Array.isArray(contract.editablePaths) ? contract.editablePaths : [])
+        ];
+        const topSegments = [...new Set(
+            rules
+                .map((r) => String(r || '').replace(/\\/g, '/').replace(/^\.\//, '').trim())
+                .filter(Boolean)
+                .map((r) => r.split('/')[0])
+                .map((s) => s.replace(/\*+/g, '').trim())
+                .filter((s) => !!s && !s.includes('.'))
+        )];
+        if (!topSegments.length) return false;
+        for (const segment of topSegments) {
+            try {
+                const stat = await fs.stat(path.join(ws, segment));
+                if (stat && (stat.isDirectory() || stat.isFile())) return true;
+            } catch {
+                // ignore
+            }
+        }
+        return false;
+    }
+
+    _recordTemplateViolationEvent(state, violation = {}) {
+        const filePath = String(violation.filePath || '');
+        const reason = String(violation.reason || 'template_contract_violation');
+        const exists = (state?.templateContext?.contractViolations || []).some(
+            (v) => String(v.filePath || '') === filePath && String(v.reason || '') === reason
+        );
+        if (exists) return;
+
+        state.templateContext = state.templateContext || {};
+        state.templateContext.contractViolations = Array.isArray(state.templateContext.contractViolations)
+            ? state.templateContext.contractViolations
+            : [];
+        state.templateContext.contractViolations.push({
+            at: String(violation.at || new Date().toISOString()),
+            filePath,
+            reason
+        });
+
+        this._appendRunEvent(state, {
+            type: 'template_contract_violation',
+            templateId: String(state?.templateContext?.templateId || violation.templateId || ''),
+            filePath,
+            reason,
+            mode: String(violation.mode || state?.templateContext?.enforcementMode || 'enforce')
+        });
+    }
+
+    _drainTemplateViolationsFromFileService(state, workspacePath) {
+        const violations = fileService.consumeTemplateViolations(workspacePath);
+        if (!violations.length) return;
+        for (const v of violations) this._recordTemplateViolationEvent(state, v);
+    }
+
+    _latestPreviewProbeChecks(state) {
+        const events = Array.isArray(state?.runReport?.events) ? state.runReport.events : [];
+        for (let i = events.length - 1; i >= 0; i--) {
+            const e = events[i];
+            if (String(e?.type || '').toLowerCase() !== 'preview_probe') continue;
+            if (String(e?.status || '').toLowerCase() !== 'pass') continue;
+            return Array.isArray(e?.runtimeChecks) ? e.runtimeChecks : [];
+        }
+        return [];
+    }
+
+    async _evaluateTemplateGate(state, workspacePath, gateId = '', projectContextSummary = '') {
+        const gate = String(gateId || '').trim();
+        if (!gate) return { gate, status: 'skip', reason: 'empty_gate' };
+
+        if (gate === 'static.immutable_path_violation') {
+            const hasViolations = Array.isArray(state?.templateContext?.contractViolations) &&
+                state.templateContext.contractViolations.length > 0;
+            return {
+                gate,
+                status: hasViolations ? 'fail' : 'pass',
+                reason: hasViolations ? 'immutable/editable path violations detected during run' : ''
+            };
+        }
+
+        if (gate === 'static.required_hooks_present') {
+            const ctx = state?.templateContext || {};
+            const hooks = Array.isArray(ctx?.contract?.injectionHooks) ? ctx.contract.injectionHooks : [];
+            const missing = hooks.filter((h) => !!h?.required && !String(h?.hookId || '').trim());
+            const staticGates = await templateCertificationService.runStaticGates({
+                templateRoot: String(ctx?.templateRoot || ''),
+                contract: ctx?.contract || {}
+            });
+            const staticFail = staticGates.find((g) => String(g?.status || '').toLowerCase() !== 'pass');
+            return {
+                gate,
+                status: missing.length || staticFail ? 'fail' : 'pass',
+                reason: missing.length
+                    ? 'required injection hook definitions are incomplete'
+                    : (staticFail ? String(staticFail.reason || 'static template certification failed') : '')
+            };
+        }
+
+        if (gate === 'build.app_id_propagation') {
+            const check = await this._checkAppIdIntegrity(state, workspacePath, projectContextSummary);
+            return { gate, status: check.ok ? 'pass' : 'fail', reason: check.ok ? '' : String(check.reason || '') };
+        }
+
+        if (gate === 'build.sdk_auth_domain_checks') {
+            const check = await complianceService.runFastGate({
+                workspacePath,
+                taskPrompt: 'publish sdk auth domain checks',
+                profileHints: ['auth'],
+                gatePhase: 'publish',
+                cache: this.complianceRuntimeCache.get(workspacePath) || state.complianceFastCache || {}
+            });
+            const failFindings = Array.isArray(check?.findings)
+                ? check.findings.filter((f) => String(f?.severity || 'error').toLowerCase() !== 'info')
+                : [];
+            return {
+                gate,
+                status: check?.status === 'fail' && failFindings.length ? 'fail' : 'pass',
+                reason: check?.status === 'fail' && failFindings.length
+                    ? `fast gate findings: ${failFindings.map((f) => f.ruleId || f.message || 'unknown').join(', ')}`
+                    : ''
+            };
+        }
+
+        if (gate === 'runtime.preview_probe_evidence') {
+            const ok = this._hasAnyPreviewProbeEvent(state);
+            return { gate, status: ok ? 'pass' : 'fail', reason: ok ? '' : 'preview probe evidence missing' };
+        }
+
+        if (gate === 'runtime.auth_profile_pass' || gate === 'runtime.matchmaking_pass') {
+            const checkName = gate.endsWith('auth_profile_pass') ? 'auth_profile' : 'matchmaking';
+            const checks = this._latestPreviewProbeChecks(state);
+            const status = checks.find((c) => String(c?.name || '').toLowerCase() === checkName)?.status || '';
+            const ok = String(status).toLowerCase() === 'pass';
+            return {
+                gate,
+                status: ok ? 'pass' : 'fail',
+                reason: ok ? '' : `${checkName} runtime check is not pass in latest preview_probe`
+            };
+        }
+
+        return { gate, status: 'skip', reason: 'unimplemented gate mapping' };
+    }
+
+    async _runTemplateCompletionGates(state, workspacePath, projectContextSummary = '') {
+        const ctx = state?.templateContext || {};
+        const required = Array.isArray(ctx?.requiredEvidence) ? ctx.requiredEvidence : [];
+        if (!ctx?.templateId || !required.length) {
+            return { pass: true, results: [] };
+        }
+
+        const results = [];
+        for (const gateId of required) {
+            const result = await this._evaluateTemplateGate(state, workspacePath, gateId, projectContextSummary);
+            results.push(result);
+            this._appendRunEvent(state, {
+                type: 'template_gate_result',
+                templateId: String(ctx.templateId || ''),
+                gate: String(result.gate || gateId),
+                status: String(result.status || 'skip'),
+                reason: String(result.reason || '')
+            });
+        }
+
+        const blocking = results.filter((r) => String(r.status || '').toLowerCase() !== 'pass');
+        return { pass: blocking.length === 0, results, blocking };
+    }
+
+    async _bindTemplateContextForRun(state, message = '', workspacePath = '') {
+        if (!state || !workspacePath) return;
+        state.templateContext = state.templateContext || {};
+        state.templateContext.contractViolations = Array.isArray(state.templateContext.contractViolations)
+            ? state.templateContext.contractViolations
+            : [];
+
+        let templateId = String(state?.templateContext?.templateId || '').trim().toLowerCase();
+        if (!templateId) {
+            const templates = await templateRegistryService.listTemplates({ includeInactive: false });
+            const ids = templates.map((t) => String(t?.id || '').toLowerCase()).filter(Boolean);
+            templateId = this._extractTemplateIdFromText(
+                `${String(message || '')}\n${String(state?.request || '')}\n${String(state?.projectContextSummary || '')}`,
+                ids
+            );
+        }
+
+        if (!templateId) {
+            fileService.clearWorkspaceTemplateContext(workspacePath);
+            return;
+        }
+
+        const rec = await templateRegistryService.getTemplateById(templateId);
+        if (!rec?.templatePath) {
+            fileService.clearWorkspaceTemplateContext(workspacePath);
+            return;
+        }
+
+        const templateRoot = path.resolve(process.cwd(), rec.templatePath);
+        const loaded = await templateContractService.loadTemplateContract(templateRoot);
+        if (!loaded?.contract) {
+            fileService.clearWorkspaceTemplateContext(workspacePath);
+            return;
+        }
+
+        const contract = loaded.contract;
+        const requestedMode = String(contract?.raw?.enforcement?.defaultMode || 'enforce').toLowerCase();
+        const hasTemplateSurface = await this._workspaceHasTemplateSurface(workspacePath, contract);
+        const enforcementMode =
+            requestedMode === 'enforce' && !hasTemplateSurface
+                ? 'audit'
+                : requestedMode;
+        state.templateContext = {
+            ...state.templateContext,
+            templateId: String(contract.id || rec.id || templateId),
+            templateVersion: String(contract.version || rec.version || '0.0.0'),
+            rulesetId: String(state?.templateContext?.rulesetId || 'default'),
+            scenarioHash: String(state?.templateContext?.scenarioHash || ''),
+            requiredEvidence: Array.isArray(contract.requiredGates) ? [...contract.requiredGates] : [],
+            enforcementMode,
+            templateRoot,
+            contract
+        };
+
+        fileService.setWorkspaceTemplateContext(workspacePath, {
+            templateId: state.templateContext.templateId,
+            templateVersion: state.templateContext.templateVersion,
+            enforcementMode,
+            contract
+        });
+    }
+
     async _collectLatestPreviewArtifactFiles(workspacePath) {
         const out = [];
         if (!workspacePath) return out;
@@ -697,6 +1144,7 @@ Requirements:
     _deriveComplianceProfiles(task, projectContextSummary = '') {
         const id = String(task?.id || '');
         const prompt = String(task?.prompt || '');
+        const fixTask = this._isFixTask(task);
 
         if (id === 'auth_preflight' || /auth preflight only/i.test(prompt)) {
             return ['auth'];
@@ -711,10 +1159,25 @@ Requirements:
         }
 
         const fromPrompt = complianceService.inferProfiles(prompt);
-        if (fromPrompt.length) return fromPrompt;
+        if (fromPrompt.length) {
+            if (fixTask) {
+                const out = new Set(fromPrompt);
+                out.add('auth');
+                out.add('multiplayer');
+                return [...out];
+            }
+            return fromPrompt;
+        }
 
         // Last fallback only when task prompt has no detectable profile.
-        return complianceService.inferProfiles(projectContextSummary);
+        const fallback = complianceService.inferProfiles(projectContextSummary);
+        if (fixTask) {
+            const out = new Set(fallback);
+            out.add('auth');
+            out.add('multiplayer');
+            return [...out];
+        }
+        return fallback;
     }
 
     _deriveCompliancePhase(task) {
@@ -727,11 +1190,11 @@ Requirements:
         return 'gameplay';
     }
 
-    _normalizePlan(rawPlan, { message = "", isResumeCommand = false } = {}) {
+    _normalizePlan(rawPlan, { message = "", isResumeCommand = false, skipWorkflowExpansion = false } = {}) {
         if (!rawPlan || typeof rawPlan !== 'object') return null;
         const tasks = this._normalizeTasks(rawPlan.tasks || []);
         if (!tasks.length) return null;
-        const enforcedTasks = this._enforceWorkflowTasks(tasks, { message });
+        const enforcedTasks = this._enforceWorkflowTasks(tasks, { message, skipWorkflowExpansion });
 
         const normalized = {
             ...rawPlan,
@@ -763,41 +1226,20 @@ Requirements:
         if (state?.runtimeFlags?.authInvalid) {
             return { ok: false, reason: 'Publish blocked: previous authentication failure detected. Please update credentials and retry.' };
         }
-        const expectedAppId = await this._resolveAppIdAuthority(state, workspacePath, contextText);
-        if (!expectedAppId) {
-            return { ok: false, reason: 'Publish blocked: App ID authority is missing. Cannot verify propagation safely.' };
+        const integrity = await this._checkAppIdIntegrity(state, workspacePath, contextText);
+        if (!integrity.ok) {
+            return { ok: false, reason: `Publish blocked: ${integrity.reason}`, details: integrity.details };
         }
-
-        const propagation = await complianceService.verifyAppIdPropagation({
-            workspacePath,
-            expectedAppId
-        });
-        if (propagation.status !== 'pass') {
-            const reason = `Publish blocked: deterministic App ID propagation check failed. ${propagation.reasons.join(' | ')}`;
-            state.runtimeFlags = state.runtimeFlags || {};
-            state.runtimeFlags.lastPropagationCheck = {
-                at: new Date().toISOString(),
-                expectedAppId,
-                status: propagation.status,
-                reasons: propagation.reasons
-            };
-            return { ok: false, reason, details: propagation };
-        }
-
-        state.runtimeFlags = state.runtimeFlags || {};
-        state.runtimeFlags.lastPropagationCheck = {
-            at: new Date().toISOString(),
-            expectedAppId,
-            status: propagation.status,
-            reasons: []
-        };
-
-        return { ok: true, details: propagation };
+        return { ok: true, details: integrity.details };
     }
 
-    async _checkVerifierPreconditions(state, workspacePath) {
+    async _checkVerifierPreconditions(state, workspacePath, contextText = "") {
         if (state?.runtimeFlags?.authInvalid) {
             return { ok: false, reason: 'Verifier blocked: authentication is invalid in this run.' };
+        }
+        const integrity = await this._checkAppIdIntegrity(state, workspacePath, contextText);
+        if (!integrity.ok) {
+            return { ok: false, reason: `Verifier blocked: ${integrity.reason}` };
         }
         try {
             const distPath = path.join(workspacePath, 'dist');
@@ -824,6 +1266,7 @@ Requirements:
         const hasExplicitResumeInstruction =
             /^(resume|continue|proceed)\b/.test(lowerMsg) &&
             /\b(and|then|run|publish|probe|fix|build|test|verify|implement)\b/.test(lowerMsg);
+        const strictFixOnlyFollowUp = this._isStrictFixOnlyMessage(message);
         
         let workspacePath;
         let state;
@@ -857,11 +1300,33 @@ Requirements:
                 ? state.tasks.filter((t) => t.status === 'pending').length
                 : 0;
             if (pendingCount === 0 && hasExplicitResumeInstruction) {
-                yield {
-                    type: 'status',
-                    content: 'No pending tasks in saved state. Re-planning follow-up tasks from your instruction...'
-                };
-                state = null;
+                if (strictFixOnlyFollowUp) {
+                    const scopedFixTasks = this._enforceWorkflowTasks(
+                        [
+                            {
+                                id: 'task_fix_scope',
+                                role: 'Coder',
+                                prompt: `Scoped fix-only follow-up. Keep existing working logic unchanged except required bug fixes.\nUser instruction: "${message}"`,
+                                dependsOn: [],
+                                status: 'pending'
+                            }
+                        ],
+                        { message, skipWorkflowExpansion: true }
+                    ).map((t) => ({ ...t, status: 'pending' }));
+                    state.request = message;
+                    state.tasks = scopedFixTasks;
+                    state.projectContextSummary = `${state.projectContextSummary || ""}\n\nFOLLOW-UP FIX-ONLY REQUEST: "${message}"\nPlanner bypassed to preserve existing working logic while applying a minimal patch.`;
+                    yield {
+                        type: 'status',
+                        content: 'No pending tasks in saved state. Scheduling strict fix-only follow-up tasks (planner bypassed).'
+                    };
+                } else {
+                    yield {
+                        type: 'status',
+                        content: 'No pending tasks in saved state. Re-planning follow-up tasks from your instruction...'
+                    };
+                    state = null;
+                }
             }
         }
 
@@ -926,6 +1391,7 @@ Requirements:
                             request: message,
                             tasks: plan.tasks.map(t => ({ ...t, status: 'pending' })),
                         };
+                        this._ensureRuntimeFlagsShape(state);
                         
                         // Append the new request to the summary context so agents know what changed
                         state.projectContextSummary += `\n\nFOLLOW-UP REQUEST: "${message}"\nNew tasks scheduled for improvement...`;
@@ -952,19 +1418,13 @@ Requirements:
                     tasks: plan.tasks.map(t => ({ ...t })),
                     history: [],
                     projectContextSummary: `ORIGINAL USER PROJECT REQUEST: "${message}"\n\nProject Initialization started.`,
-                    runtimeFlags: {
-                        authInvalid: false,
-                        appIdAuthority: {
-                            value: "",
-                            source: "",
-                            updatedAt: ""
-                        }
-                    },
+                    runtimeFlags: {},
                     runReport: {
                         startedAt: new Date().toISOString(),
                         events: []
                     }
                 };
+                this._ensureRuntimeFlagsShape(state);
                 if (Array.isArray(attachments) && attachments.length) {
                     const specs = attachments.map((a, i) => `${i + 1}. ${a.name} (${a.mimeType})`).join('\n');
                     state.projectContextSummary += `\n\nSPEC ATTACHMENTS PROVIDED:\n${specs}`;
@@ -981,9 +1441,19 @@ Requirements:
         }
 
         let projectContextSummary = state.projectContextSummary || "";
-        state.runtimeFlags = state.runtimeFlags || { authInvalid: false };
+        this._ensureRuntimeFlagsShape(state);
         state.projectContextSummary = projectContextSummary;
+        await this._bindTemplateContextForRun(state, message, workspacePath);
         this._beginRunReport(state);
+        if (state?.templateContext?.templateId) {
+            this._appendRunEvent(state, {
+                type: 'template_selected',
+                templateId: String(state.templateContext.templateId || ''),
+                templateVersion: String(state.templateContext.templateVersion || ''),
+                rulesetId: String(state.templateContext.rulesetId || 'default'),
+                enforcementMode: String(state.templateContext.enforcementMode || 'enforce')
+            });
+        }
         this._appendRunEvent(state, {
             type: 'run_started',
             request: String(message || '').slice(0, 400),
@@ -1111,7 +1581,11 @@ Requirements:
                 }
 
                 if (String(task.role || '').toUpperCase() === 'VERIFIER') {
-                    const verifierPrecheck = await this._checkVerifierPreconditions(state, workspacePath);
+                    const verifierPrecheck = await this._checkVerifierPreconditions(
+                        state,
+                        workspacePath,
+                        `${projectContextSummary}\n${String(task.prompt || "")}`
+                    );
                     if (!verifierPrecheck.ok) {
                         task.status = 'blocked';
                         const reason = verifierPrecheck.reason || 'Verifier preconditions not met.';
@@ -1148,11 +1622,18 @@ Requirements:
                     /viverse-cli\s+app\s+create|VITE_VIVERSE_CLIENT_ID/i.test(String(task.prompt || ""))
                         ? `\n\n[APP_SETUP_SCOPE]\nThis task is App setup/app-id wiring.\n- Extract one authoritative App ID (10-char alnum with at least one digit).\n- Write .env with that exact ID.\n- Build once, verify once with exact ID.\n- Do NOT probe dist with random/partial tokens.\n`
                         : '';
+                const battleTanksScopeBlock =
+                    task.role?.toUpperCase() === 'CODER' &&
+                    /battletanks-v1|tank battle|tank[-\s]?template|battle\s*tanks/i.test(
+                        `${String(task.prompt || "")}\n${String(projectContextSummary || "")}`
+                    )
+                        ? `\n\n[BATTLETANKS_TEMPLATE_SCOPE]\nTank-template runtime baseline is mandatory:\n- Local controllable tank MUST spawn even when matchmaking actor resolution is delayed.\n- Do NOT gate local tank mount strictly on myActor existence; provide deterministic local fallback actor/id.\n- Keyboard controls MUST work in iframe/world context (WASD/Arrow/Space capture + preventDefault + focus acquisition on pointer interaction).\n- Keep local movement/fire loop functional in degraded single-player mode when network/matchmaking is unavailable.\n- Preserve working gameplay systems while fixing auth/matchmaking issues.\n`
+                        : '';
                 const sanitizedSummary = this._sanitizeSummaryForAgent(projectContextSummary, state, task.role);
                 const compactSummary = (task.role?.toUpperCase() === 'VERIFIER' || task.role?.toUpperCase() === 'REVIEWER')
                     ? sanitizedSummary.slice(-4000)
                     : sanitizedSummary;
-                const agentPrompt = `Project Summary Context:\n${compactSummary}${credentialsBlock}${authPreflightScopeBlock}${appSetupScopeBlock}\n\nYour Sandboxed Workspace: ${workspacePath}\n\nYour Task: ${task.prompt}${skillEnforcement}`;
+                const agentPrompt = `Project Summary Context:\n${compactSummary}${credentialsBlock}${authPreflightScopeBlock}${appSetupScopeBlock}${battleTanksScopeBlock}\n\nYour Sandboxed Workspace: ${workspacePath}\n\nYour Task: ${task.prompt}${skillEnforcement}`;
                 
                 const taskAttachments = task.role?.toUpperCase() === 'ARCHITECT' ? attachments : [];
                 const agentStream = geminiService.generateResponseStream(
@@ -1255,7 +1736,8 @@ Requirements:
                     const isToolLoop = /MAX_TOOL_ITERATIONS_REACHED|CONVERGENCE_GUARD|AGENT_TASK_IDLE_TIMEOUT|AGENT_TASK_DURATION_TIMEOUT/i.test(reason);
                     state.runtimeFlags = state.runtimeFlags || {};
                     state.runtimeFlags.loopRecovery = state.runtimeFlags.loopRecovery || {};
-                    const recoveryKey = `${task.id}`;
+                    const loopRootId = String(task?.loopRootId || task?.recoveryOf || task.id);
+                    const recoveryKey = `${roleUpper}:${loopRootId}`;
                     const prevRecoveryCount = Number(state.runtimeFlags.loopRecovery[recoveryKey] || 0);
 
                     if (isCoder && isToolLoop && prevRecoveryCount < 1) {
@@ -1264,6 +1746,8 @@ Requirements:
                         state.tasks.push({
                             id: retryId,
                             role: 'Coder',
+                            recoveryOf: loopRootId,
+                            loopRootId,
                             prompt: `LOOP RECOVERY TASK (deterministic): Previous coder task '${task.id}' failed due to tool loop (${reason}).
 1) Determine authoritative App ID (10-char alnum with at least one digit) from .env or viverse-cli output.
 2) Ensure .env has exactly VITE_VIVERSE_CLIENT_ID=<authoritative_app_id>.
@@ -1307,6 +1791,8 @@ Requirements:
                         state.tasks.push({
                             id: retryId,
                             role: 'Verifier',
+                            recoveryOf: loopRootId,
+                            loopRootId,
                             prompt: `LOOP RECOVERY TASK (deterministic): Previous verifier task '${task.id}' failed due to tool loop (${reason}).
 Use existing workspace artifacts only; do NOT run broad recursive scans or repeated token-hunting loops.
 1) Read latest preview probe report under artifacts/preview-tests (most recent preview-*.json and linked browser-report.json).
@@ -1600,10 +2086,11 @@ Requirements:
 
                                 if (!existingPending) {
                                     const fixTaskId = `c_fix_${Date.now()}`;
+                                    const scopeGuard = this._buildFixScopeAndBaselineGuard(state, { issueLines: reasons });
                                     state.tasks.push({
                                         id: fixTaskId,
                                         role: 'Coder',
-                                        prompt: `DETERMINISTIC COMPLIANCE FIX REQUIRED. Signature: ${signature}\nResolve all failed rules from fast gate:\n${reasons.join('\n')}\n\nTask context: ${task.prompt}`,
+                                        prompt: `DETERMINISTIC COMPLIANCE FIX REQUIRED. Signature: ${signature}\nResolve all failed rules from fast gate:\n${reasons.join('\n')}\n\nTask context: ${task.prompt}\n\n${scopeGuard}`,
                                         dependsOn: [],
                                         status: 'pending'
                                     });
@@ -1684,6 +2171,21 @@ Requirements:
                                 if (!blockingItems.includes(line)) blockingItems.push(line);
                             }
                         }
+                        const baselineRegressions = this._evaluateBaselineRegressions({
+                            state,
+                            runtimeChecks,
+                            runtimeBlockers
+                        });
+                        if (baselineRegressions.length > 0) {
+                            reviewJson.status = 'fail';
+                            const baselineLines = baselineRegressions.map((r) => `Baseline contract regression detected: ${r}`);
+                            for (const line of baselineLines) {
+                                if (!blockingItems.includes(line)) blockingItems.push(line);
+                            }
+                            if (!evidence.includes('baseline-contract guard failed in reviewer parse gate')) {
+                                evidence.push('baseline-contract guard failed in reviewer parse gate');
+                            }
+                        }
                         const requiredChecks = ['auth_profile', 'matchmaking'];
                         const checkMap = new Map(
                             runtimeChecks
@@ -1728,6 +2230,9 @@ Requirements:
                             };
                             const fixTaskId = `fix_${Date.now()}`;
                             const runtimeBlockerLines = runtimeBlockers.map((b) => `- ${b.id}: ${b.message} (artifacts: ${b.artifacts.join(', ')})`);
+                            const scopeGuard = this._buildFixScopeAndBaselineGuard(state, {
+                                issueLines: [...blockingItems.slice(0, 20), ...runtimeBlockerLines]
+                            });
                             state.tasks.push({
                                 id: fixTaskId,
                                 role: 'Coder',
@@ -1735,7 +2240,7 @@ Requirements:
                                     (runtimeBlockerLines.length
                                         ? `Mandatory runtime signature blockers (fix these first):\n${runtimeBlockerLines.join('\n')}\n\n`
                                         : '') +
-                                    `Reviewer feedback: ${reviewJson.feedback}\nEvidence:\n${evidence.join('\n')}`,
+                                    `Reviewer feedback: ${reviewJson.feedback}\nEvidence:\n${evidence.join('\n')}\n\n${scopeGuard}`,
                                 dependsOn: [],
                                 status: 'pending'
                             });
@@ -1769,6 +2274,13 @@ Requirements:
                             if (!previewUrlTested) {
                                 throw new Error('INVALID_REVIEWER_SCHEMA: pass status requires preview_url_tested');
                             }
+                            this._captureBaselineContractFromRuntimeChecks(state, {
+                                runtimeChecks,
+                                sourceTaskId: String(task.id || ''),
+                                source: 'reviewer_pass'
+                            });
+                            state.runtimeFlags = state.runtimeFlags || {};
+                            state.runtimeFlags.lastReviewerPassAt = new Date().toISOString();
                             projectContextSummary += `\n- Reviewer passed validation.`;
                         }
                     } catch (e) {
@@ -1917,7 +2429,8 @@ Requirements:
                                     role: task.role,
                                     status: probe.status,
                                     previewUrl: probe.preview_url_tested || extractedUrl,
-                                    artifacts
+                                    artifacts,
+                                    runtimeChecks: checks
                                 });
                                 yield {
                                     type: 'status',
@@ -1927,7 +2440,15 @@ Requirements:
                                     )
                                 };
 
-                                if (String(probe.status || '').toLowerCase() === 'fail') {
+                                if (String(probe.status || '').toLowerCase() === 'pass') {
+                                    this._captureBaselineContractFromRuntimeChecks(state, {
+                                        runtimeChecks: checks,
+                                        sourceTaskId: String(task.id || ''),
+                                        source: 'preview_probe_pass'
+                                    });
+                                    state.runtimeFlags = state.runtimeFlags || {};
+                                    state.runtimeFlags.lastPreviewProbePassAt = new Date().toISOString();
+                                } else if (String(probe.status || '').toLowerCase() === 'fail') {
                                     const autoFix = this._scheduleAutoTestFixTask({
                                         state,
                                         task,
@@ -1973,6 +2494,10 @@ Requirements:
                     durationMs: Date.now() - taskStartedAt
                 });
                 state.projectContextSummary = projectContextSummary;
+                if (this._isFixTask(task)) {
+                    state.runtimeFlags = state.runtimeFlags || {};
+                    state.runtimeFlags.lastFixTaskCompletedAt = new Date().toISOString();
+                }
                 
                 // APPEND ACTUAL RESULT TO CONTEXT
                 const truncatedResult = fullResponse.length > 500 ? fullResponse.substring(0, 500) + "..." : fullResponse;
@@ -1981,10 +2506,12 @@ Requirements:
                 
                 yield { type: 'status', content: `Task ${task.id} completed.` };
                 yield { type: 'text', content: `\n\n✅ **${task.role}** has completed the task.` };
+                this._drainTemplateViolationsFromFileService(state, workspacePath);
                 await this._saveState(state);
             }
         }
 
+        this._drainTemplateViolationsFromFileService(state, workspacePath);
         const runEvents = Array.isArray(state?.runReport?.events) ? state.runReport.events : [];
         const recoveredFailedTaskIds = new Set(
             runEvents
@@ -2001,6 +2528,82 @@ Requirements:
         const workflowTasksSettled = !hasPendingTasks && !hasBlockingTaskStates;
 
         if (workflowTasksSettled) {
+            if (this._hasUnresolvedAppIdPlaceholder(projectContextSummary)) {
+                projectContextSummary += `\n- WORKFLOW HALTED: App ID authority is unresolved/placeholder (YOUR_APP_ID).`;
+                state.projectContextSummary = projectContextSummary;
+                yield {
+                    type: 'status',
+                    content: 'Workflow paused: unresolved placeholder App ID authority detected.'
+                };
+                yield {
+                    type: 'text',
+                    content: this._buildOutcomeNotice(state, {
+                        completed: false,
+                        reason: 'App ID authority unresolved'
+                    })
+                };
+                await this._finalizeWorkflowState(state, 'paused_or_failed');
+                return;
+            }
+            const completionAppIdIntegrity = await this._checkAppIdIntegrity(
+                state,
+                workspacePath,
+                projectContextSummary
+            );
+            if (!completionAppIdIntegrity.ok) {
+                const reason = completionAppIdIntegrity.reason || 'App ID integrity check failed.';
+                projectContextSummary += `\n- WORKFLOW HALTED: ${reason}`;
+                state.projectContextSummary = projectContextSummary;
+                yield {
+                    type: 'status',
+                    content: `Workflow paused: ${reason}`
+                };
+                yield {
+                    type: 'text',
+                    content: this._buildOutcomeNotice(state, {
+                        completed: false,
+                        reason
+                    })
+                };
+                await this._finalizeWorkflowState(state, 'paused_or_failed');
+                return;
+            }
+            if (!this._hasRuntimeRevalidationAfterLatestFix(state)) {
+                projectContextSummary += `\n- WORKFLOW HALTED: A fix task completed without fresh reviewer/probe runtime revalidation.`;
+                state.projectContextSummary = projectContextSummary;
+                yield {
+                    type: 'status',
+                    content: 'Workflow paused: post-fix runtime revalidation is missing.'
+                };
+                yield {
+                    type: 'text',
+                    content: this._buildOutcomeNotice(state, {
+                        completed: false,
+                        reason: 'Missing runtime revalidation after fix'
+                    })
+                };
+                await this._finalizeWorkflowState(state, 'paused_or_failed');
+                return;
+            }
+            const finalRuntimeBlockers = await this._detectRuntimeBlockerSignatures(workspacePath, []);
+            if (finalRuntimeBlockers.length > 0) {
+                const ids = finalRuntimeBlockers.map((b) => b.id).join(', ');
+                projectContextSummary += `\n- WORKFLOW HALTED: Runtime blocker signatures still present at completion gate (${ids}).`;
+                state.projectContextSummary = projectContextSummary;
+                yield {
+                    type: 'status',
+                    content: `Workflow paused: runtime blocker signatures remain (${ids}).`
+                };
+                yield {
+                    type: 'text',
+                    content: this._buildOutcomeNotice(state, {
+                        completed: false,
+                        reason: 'Runtime blocker signatures unresolved'
+                    })
+                };
+                await this._finalizeWorkflowState(state, 'paused_or_failed');
+                return;
+            }
             if (this._hasBlockingPreviewProbeFailure(state)) {
                 projectContextSummary += `\n- WORKFLOW HALTED: Preview probe failed in this run; completion is blocked until runtime checks pass.`;
                 state.projectContextSummary = projectContextSummary;
@@ -2030,6 +2633,27 @@ Requirements:
                     content: this._buildOutcomeNotice(state, {
                         completed: false,
                         reason: 'Runtime/browser evidence missing'
+                    })
+                };
+                await this._finalizeWorkflowState(state, 'paused_or_failed');
+                return;
+            }
+            const templateGate = await this._runTemplateCompletionGates(state, workspacePath, projectContextSummary);
+            if (!templateGate.pass) {
+                const reasons = (templateGate.blocking || [])
+                    .map((g) => `${g.gate}: ${g.reason || g.status}`)
+                    .join(' | ');
+                projectContextSummary += `\n- WORKFLOW HALTED: Template required gates failed (${reasons}).`;
+                state.projectContextSummary = projectContextSummary;
+                yield {
+                    type: 'status',
+                    content: `Workflow paused: template required gates failed. ${reasons}`
+                };
+                yield {
+                    type: 'text',
+                    content: this._buildOutcomeNotice(state, {
+                        completed: false,
+                        reason: 'Template required gates failed'
                     })
                 };
                 await this._finalizeWorkflowState(state, 'paused_or_failed');
@@ -2099,9 +2723,19 @@ Requirements:
             if (redacted?.complianceFastCache?.fileIndex) {
                 delete redacted.complianceFastCache.fileIndex;
             }
-            await fileService.writeFile(`${state.workspacePath}/.agent_state.json`, JSON.stringify(redacted, null, 2));
+            await fileService.writeFile(
+                `${state.workspacePath}/.agent_state.json`,
+                JSON.stringify(redacted, null, 2),
+                undefined,
+                { skipTemplateEnforcement: true }
+            );
             if (redacted?.runReport) {
-                await fileService.writeFile(`${state.workspacePath}/run_report.json`, JSON.stringify(redacted.runReport, null, 2));
+                await fileService.writeFile(
+                    `${state.workspacePath}/run_report.json`,
+                    JSON.stringify(redacted.runReport, null, 2),
+                    undefined,
+                    { skipTemplateEnforcement: true }
+                );
             }
         } catch (e) {
             logger.error(`Failed to save agent state: ${e.message}`);

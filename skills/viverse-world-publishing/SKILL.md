@@ -35,6 +35,10 @@ These are release blockers for any publishing task:
 3. **MUST NOT** perform repeated equivalent grep checks without state change.
    - Retrying the same command with unchanged files/build output is invalid.
 4. **MUST** perform a fresh build before `viverse-cli app publish` if `.env` or App ID-related source changed.
+5. **MUST** lock App ID after first app creation in a workspace/run:
+   - Immediately write `.env` with `VITE_VIVERSE_CLIENT_ID=<created_app_id>`.
+   - After this point, treat `VITE_VIVERSE_CLIENT_ID` as immutable for all fix/rebuild/republish steps.
+   - Republish reuses the same App ID; never rotate App ID unless user explicitly requests migration to a different app.
 
 ## CLI Workflow
 
@@ -68,6 +72,18 @@ viverse-cli app list
 viverse-cli app publish ./dist --app-id <APP_ID>
 ```
 
+### 5A) First publish vs republish policy
+
+- First publish (new app):
+  1. `viverse-cli app create --name "<APP_NAME>"`
+  2. Extract App ID from stdout.
+  3. Write `.env` with `VITE_VIVERSE_CLIENT_ID=<APP_ID>`.
+  4. Build and publish with the same App ID.
+- Republish (existing app):
+  1. Read App ID from `.env`.
+  2. Build and publish with that same App ID.
+  3. Do not rewrite `.env` App ID.
+
 ### 6) (Optional) Auto-create app + publish
 
 > [!IMPORTANT]
@@ -89,7 +105,7 @@ viverse-cli app publish ./dist --auto-create-app --name "<APP_NAME>" --type worl
 
 - `import.meta.env` is build-time in Vite; rebuild after env changes.
 - Publishing to app A with build configured for app B can break auth and leaderboard.
-- A hardcoded fallback ID is only acceptable if it matches the same authoritative App ID and is intentional for resilience; mismatched fallback IDs are release blockers.
+- Hardcoded runtime fallback App IDs are release blockers. Runtime must read `VITE_VIVERSE_CLIENT_ID` from env wiring.
 - Asset paths must be deployment-safe (relative/public).
 - Review state in Studio may block full live rollout after upload.
 - After publish, browser/app cache can still run old bundle hash; hard refresh or add temporary build-tag log for verification during hotfix debugging.

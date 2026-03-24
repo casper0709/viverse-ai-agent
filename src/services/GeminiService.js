@@ -485,8 +485,11 @@ Available Documentation (Use 'readDoc' to read):
             this.commandConvergence.set(key, {
                 mutationVersion: 0,
                 byClass: {},
+                byToolArg: {},
                 addLessonCount: 0,
                 runCommandCount: 0,
+                runCommandCountThisMutation: 0,
+                lastRunCommandMutationVersion: -1,
                 distGrepCount: 0,
                 lastDistGrepMutationVersion: -1
             });
@@ -499,6 +502,36 @@ Available Documentation (Use 'readDoc' to read):
         state.addLessonCount = 0;
         state.runCommandCount = 0;
         state.distGrepCount = 0;
+        state.runCommandCountThisMutation = 0;
+    }
+
+    _normalizeToolArgSignature(name = '', args = {}) {
+        const tool = String(name || '');
+        if (tool === 'readFile') return String(args?.filePath || '');
+        if (tool === 'listFiles') return String(args?.dirPath || '.');
+        if (tool === 'runCommand') return `${String(args?.cwd || '.')}\n${String(args?.command || '')}`;
+        return '';
+    }
+
+    _hitRepeatedToolArgGuard(workspacePath = null, name = '', args = {}, maxRepeats = 8) {
+        const tool = String(name || '');
+        const argSig = this._normalizeToolArgSignature(tool, args);
+        if (!argSig) return { blocked: false, repeats: 0 };
+
+        const state = this._workspaceConvergenceState(workspacePath);
+        const key = `${tool}::${argSig}`;
+        const mv = Number(state.mutationVersion || 0);
+        const byToolArg = state.byToolArg || {};
+        const rec = byToolArg[key] || { repeats: 0, lastMutationVersion: -1 };
+
+        if (rec.lastMutationVersion === mv) rec.repeats += 1;
+        else rec.repeats = 1;
+        rec.lastMutationVersion = mv;
+
+        byToolArg[key] = rec;
+        state.byToolArg = byToolArg;
+
+        return { blocked: rec.repeats > maxRepeats, repeats: rec.repeats };
     }
 
     _bumpMutationVersion(workspacePath = null) {
@@ -909,7 +942,26 @@ Available Documentation (Use 'readDoc' to read):
             logger.info(`GeminiService: Executing tool ${name} (ID: ${callId})`);
             try {
                 let toolResult;
-                if (name === "readFile") toolResult = await fileService.readFile(args.filePath, workspacePath);
+                const repeatedRead = name === "readFile"
+                    ? this._hitRepeatedToolArgGuard(workspacePath, name, args, 10)
+                    : { blocked: false };
+                const repeatedList = name === "listFiles"
+                    ? this._hitRepeatedToolArgGuard(workspacePath, name, args, 12)
+                    : { blocked: false };
+                const repeatedCmd = name === "runCommand"
+                    ? this._hitRepeatedToolArgGuard(workspacePath, name, args, 6)
+                    : { blocked: false };
+
+                if (repeatedRead.blocked || repeatedList.blocked || repeatedCmd.blocked) {
+                    const repeats =
+                        repeatedRead.repeats || repeatedList.repeats || repeatedCmd.repeats || 0;
+                    toolResult = {
+                        error: `CONVERGENCE_GUARD: repeated ${name} with same arguments (${repeats} times) without meaningful code-state change. Stop repeating identical tool calls and continue with a deterministic next step.`,
+                        retriable: false,
+                        convergenceGuard: true
+                    };
+                }
+                else if (name === "readFile") toolResult = await fileService.readFile(args.filePath, workspacePath);
                 else if (name === "writeFile") {
                     toolResult = await fileService.writeFile(args.filePath, args.content, workspacePath);
                     this._bumpMutationVersion(workspacePath);
@@ -918,6 +970,18 @@ Available Documentation (Use 'readDoc' to read):
                 else if (name === "runCommand") {
                     const wsState = this._workspaceConvergenceState(workspacePath);
                     wsState.runCommandCount = Number(wsState.runCommandCount || 0) + 1;
+                    if (Number(wsState.lastRunCommandMutationVersion) !== Number(wsState.mutationVersion)) {
+                        wsState.lastRunCommandMutationVersion = Number(wsState.mutationVersion || 0);
+                        wsState.runCommandCountThisMutation = 0;
+                    }
+                    wsState.runCommandCountThisMutation = Number(wsState.runCommandCountThisMutation || 0) + 1;
+                    if (wsState.runCommandCountThisMutation > 14) {
+                        toolResult = {
+                            error: `CONVERGENCE_GUARD: excessive runCommand loops without code-state mutation (${wsState.runCommandCountThisMutation} commands at mutationVersion=${wsState.mutationVersion}). Stop command churn, summarize blocker, and switch to deterministic minimal fix.`,
+                            retriable: false,
+                            convergenceGuard: true
+                        };
+                    } else {
                     toolResult = await fileService.runCommand(args.command, args.cwd, workspacePath);
                     const commandClass = this._classifyCommand(args.command);
                     if (commandClass === 'build') {
@@ -958,6 +1022,7 @@ Available Documentation (Use 'readDoc' to read):
                                 convergenceGuard: true
                             };
                         }
+                    }
                     }
                 }
                 else if (name === "runBackgroundCommand") toolResult = await fileService.runBackgroundCommand(args.command, args.cwd, workspacePath);

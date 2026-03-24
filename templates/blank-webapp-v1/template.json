@@ -1,0 +1,17 @@
+{
+  "id": "blank-webapp-v1",
+  "version": "1.0.0",
+  "upstream": {
+    "sourceType": "internal"
+  },
+  "capabilities": ["auth", "publish"],
+  "immutablePaths": ["assets/**"],
+  "editablePaths": ["src/**", "public/**", "rulesets/**", "TEMPLATE.md", "scenario.schema.json"],
+  "injectionHooks": [],
+  "requiredGates": ["build.app_id_propagation"],
+  "rulesetSchemaRef": "./scenario.schema.json#/definitions/rulesetRef",
+  "scenarioSchemaRef": "./scenario.schema.json",
+  "enforcement": {
+    "defaultMode": "audit"
+  }
+}

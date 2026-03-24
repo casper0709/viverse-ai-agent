@@ -1,0 +1,31 @@
+{
+  "version": "1.0.0",
+  "updatedAt": "2026-03-24T00:00:00.000Z",
+  "templates": [
+    {
+      "id": "battletanks-v1",
+      "name": "BattleTanks Base Template",
+      "version": "1.0.0",
+      "genre": "Action Shooter",
+      "description": "Tank-combat starter template with protected engine core and customizable gameplay surface.",
+      "tags": ["game", "tank", "action", "threejs", "multiplayer-ready"],
+      "capabilities": ["auth", "matchmaking", "leaderboard", "publish"],
+      "status": "active",
+      "upstream": "https://github.com/EGalahad/BattleTanks",
+      "templatePath": "templates/battletanks-v1",
+      "recommendedPrompt": "Create a new tank battle game using template 'battletanks-v1'. Keep core architecture stable and customize gameplay rules and UI."
+    },
+    {
+      "id": "blank-webapp-v1",
+      "name": "Blank Web App",
+      "version": "1.0.0",
+      "genre": "Utility",
+      "description": "Lightweight baseline for non-game app generation with VIVERSE integration hooks.",
+      "tags": ["app", "blank", "utility"],
+      "capabilities": ["auth", "publish"],
+      "status": "active",
+      "templatePath": "templates/blank-webapp-v1",
+      "recommendedPrompt": "Create a new web app from template 'blank-webapp-v1' and implement the requested feature set."
+    }
+  ]
+}
