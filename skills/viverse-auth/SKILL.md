@@ -48,15 +48,20 @@ These are release blockers for any auth integration task:
 4. **MUST** pass token as `accessToken`, `token`, and `authorization` when constructing `new vSdk.avatar(...)`.
 5. **MUST NOT** use request header/key `accesstoken` (lowercase); it is blocked in production CORS preflight.
 6. **MUST** run this profile strategy order: `avatarClient.getProfile()` -> `client.getUserInfo()` -> `client.getUser()` -> `client.getProfileByToken(token)` -> direct API fallback.
+   Continue to the next strategy whenever profile is missing or missing required identity/avatar fields.
 7. **MUST NOT** display `account_id` (full or partial) as username in UI fallback.
 8. **MANDATORY (Version Traceability)**: generated auth code must include a `VERSION_NAME` constant logged on startup.
+9. **MUST** run auth bootstrap exactly once per page mount/session (guard with `useRef`); do not re-run full `initialize()->checkAuth()` due to hook dependency churn.
+10. **MUST** use the currently detected SDK instance for profile strategies in the same init cycle (do not rely on async `setSdk` state before calling `avatar.getProfile()`).
+11. **MUST** apply bridge-ready retry for profile enrichment: when `vSdk.bridge.isReady === false`, wait 500ms before profile fallback chain.
+12. **MUST NOT** downgrade profile quality: generic fallback names (`VIVERSE Player`/`Player-*`) must not overwrite a previously resolved specific name.
 
 ## Implementation Workflow
 
 ### 1. Initialize the Client
 
 ```javascript
-const vSdk = window.viverse || window.VIVERSE_SDK;
+const vSdk = window.viverse || window.VIVERSE_SDK || window.vSdk;
 
 const client = new vSdk.client({
     clientId: 'YOUR_APP_ID',            // From VIVERSE Studio
@@ -73,7 +78,7 @@ To avoid "openUrl" destructuring crashes during initialization, you must wait fo
 
 ```javascript
 const detectSdk = () => {
-  const vSdk = window.vSdk || window.viverse || window.VIVERSE_SDK;
+  const vSdk = window.viverse || window.VIVERSE_SDK || window.vSdk;
   const bridgeReady = vSdk && (vSdk.bridge ? vSdk.bridge.isReady !== false : true);
 
   if (vSdk?.client && bridgeReady) {
@@ -83,6 +88,19 @@ const detectSdk = () => {
   }
 };
 ```
+
+### 1.6 Single-Bootstrap Guard (Critical)
+
+```javascript
+const initOnceRef = useRef(false);
+useEffect(() => {
+  if (initOnceRef.current) return;
+  initOnceRef.current = true;
+  initialize(); // one-shot
+}, []);
+```
+
+If this guard is missing, repeated `checkAuth()` cycles can race and leave profile stuck at generic fallback.
 
 ### 2. Check Existing Session
 
@@ -106,7 +124,7 @@ if (result) {
 `checkAuth()` gives token/account identity, then profile must be recovered with a deterministic fallback chain.
 
 ```javascript
-const vSdk = window.vSdk || window.viverse || window.VIVERSE_SDK;
+const vSdk = window.viverse || window.VIVERSE_SDK || window.vSdk;
 const appId = import.meta.env.VITE_VIVERSE_CLIENT_ID;
 const auth = await client.checkAuth();
 if (!auth?.access_token) return null;
@@ -135,23 +153,29 @@ if (vSdk?.avatar) {
   } catch (_) {}
 }
 
-// 2) Bridge-safe identity recovery
-if (!mergedProfile?.displayName && client?.getUserInfo) {
+const hasIdentity = (p) =>
+  !!(p && (p.name || p.displayName || p.display_name || p.nickName || p.nickname || p.userName || p.email));
+const hasAvatar = (p) =>
+  !!(p && (p.activeAvatar?.avatarUrl || p.avatarUrl || p.avatar_url || p.profilePicUrl));
+const needsMoreProfile = (p) => !p || !hasIdentity(p) || !hasAvatar(p);
+
+// 2) Bridge-safe fallback
+if (needsMoreProfile(mergedProfile) && client?.getUserInfo) {
   try { merge(await client.getUserInfo()); } catch (_) {}
 }
 
 // 3) Legacy fallback
-if (!mergedProfile?.displayName && client?.getUser) {
+if (needsMoreProfile(mergedProfile) && client?.getUser) {
   try { merge(await client.getUser()); } catch (_) {}
 }
 
 // 4) Token-based fallback
-if (!mergedProfile?.displayName && client?.getProfileByToken) {
+if (needsMoreProfile(mergedProfile) && client?.getProfileByToken) {
   try { merge(await client.getProfileByToken(token)); } catch (_) {}
 }
 
 // 5) Optional direct API fallback (environment-dependent, may be blocked by CORS)
-if (!mergedProfile?.displayName) {
+if (needsMoreProfile(mergedProfile)) {
   try {
     const resp = await fetch('https://account-profile.htcvive.com/SS/Profiles/v3/Me', {
       headers: { Authorization: `Bearer ${token}` },

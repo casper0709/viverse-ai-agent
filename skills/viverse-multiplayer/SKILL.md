@@ -17,12 +17,23 @@ Use when a project needs:
 - Custom state sync (turn-based or real-time)
 - Reliable rejoin/leave behavior between test sessions
 
+## Pre-Generation Checklist (Run Before Coding)
+
+1. Define `actorIdOf(actor)` and `roomIdOf(room)` helpers that are null-safe.
+2. Normalize all SDK room/actor payloads before any `.id` access.
+3. Decide late-join recovery path up front:
+   - `requestState` handshake, or
+   - host periodic authoritative state replay.
+4. Keep manual room controls (`Create`, `Join`, `Leave`) even if auto-match exists.
+5. Gate `Start Match` by live actor count (`2/2` for 1v1) and host role.
+
 ## Read Order (Important)
 
 1. This file (workflow + safety rules)
 2. [patterns/matchmaking-flow.md](patterns/matchmaking-flow.md)
-3. [patterns/move-sync-reliability.md](patterns/move-sync-reliability.md)
-4. [examples/chess-move-sync.md](examples/chess-move-sync.md) for turn-based games
+3. [patterns/robust-room-lifecycle.md](patterns/robust-room-lifecycle.md)
+4. [patterns/move-sync-reliability.md](patterns/move-sync-reliability.md)
+5. [examples/chess-move-sync.md](examples/chess-move-sync.md) for turn-based games
 
 ## Prerequisites
 
@@ -52,15 +63,22 @@ Use when a project needs:
 13. **MUST** verify host actor binding after create+join: confirm `session_id` exists in `mc.getMyRoomActors()` or `room.actors`; if missing, retry `setActor` + `joinRoom(roomId)` before entering waiting/start UI.
 14. **MUST NOT** call `joinRoom(ROOM_KEY)` using a synthetic/shared key directly. Always discover existing rooms first and join by real `room.id`/`room.roomId`.
 15. **MUST** normalize and validate `roomId` before `new MultiplayerClient(...)`; if missing, throw `Error("roomId is required")` and stop gameplay initialization.
+16. **MUST** provide explicit room lifecycle actions (`createRoom`, `joinRoom`, `leaveRoom`) even when auto-match is enabled.
+17. **MUST** guard actor/room normalization against `null` SDK entries; never read `.id` from untrusted payloads without object checks.
+18. **MUST** provide late-join state recovery (`requestState` flow or host replay of authoritative state) so joiners cannot stay stuck in pre-start UI.
 
 ## Implementation Workflow
+
+> [!IMPORTANT]
+> Before coding, load and apply [patterns/robust-room-lifecycle.md](patterns/robust-room-lifecycle.md).
+> It is the canonical create/join/auto-match and room cleanup recipe.
 
 ### 1) Init Play + Matchmaking (Hardened v3.7)
 
 Do NOT rely on automatic connection. Use a Promise to guarantee the client is ready.
 
 ```javascript
-const v = window.vSdk || window.viverse || window.VIVERSE_SDK;
+const v = window.viverse || window.VIVERSE_SDK || window.vSdk;
 const PlayClass = v.Play || v.play || window.play?.Play || window.Play;
 const playClient = new PlayClass();
 
@@ -155,7 +173,18 @@ const MClient =
   window.play?.MultiplayerClient ||
   window.Play?.MultiplayerClient;
 if (!roomId) throw new Error("roomId is required");
-const mp = new MClient(roomId, appId, userSessionId);
+let mp;
+try {
+  mp = new MClient(roomId, {
+    app_id: appId,
+    token: accessToken,
+    authorization: accessToken,
+    accessToken,
+    session_id: actorSessionId
+  });
+} catch (_) {
+  mp = new MClient(roomId, appId, actorSessionId);
+}
 await mp.init({ modules: { general: { enabled: true } } });
 ```
 
@@ -264,7 +293,7 @@ For collectible gameplay state (pickups, temporary buffs):
 
 ## Critical Gotchas
 
-- **Session-Matching Alpha**: To find your `actor_id`, iterate `room.actors` and find the one where `actor.session_id === mySessionId`.
+- **Session-Matching Alpha**: To find your `actor_id`, iterate `room.actors` and find the one where `actor.session_id === actorSessionId`.
 - **MANDATORY**: Do NOT call `getActorId()`.
 - Register/start handlers before calling `startGame` to avoid missed events.
 - Use `mp.general.sendMessage(...)` with bound context; avoid detached fn refs.

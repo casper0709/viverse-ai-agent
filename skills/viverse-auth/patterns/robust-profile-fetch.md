@@ -11,7 +11,7 @@ Copy this helper into your project (e.g., `utils/viverseHelper.js`):
 ```javascript
 /**
  * Robustly fetches the VIVERSE user profile using multiple strategies.
- * @param {Object} vSdk - The loaded VIVERSE SDK object (window.viverse or window.VIVERSE_SDK)
+ * @param {Object} vSdk - The loaded VIVERSE SDK object (window.viverse or window.VIVERSE_SDK or window.vSdk)
  * @param {Object} client - The initialized VIVERSE Auth Client
  * @param {string} accessToken - The access token from checkAuth()
  * @param {string} accountId - The account ID from checkAuth()
@@ -63,9 +63,11 @@ export async function fetchViverseProfile(vSdk, client, accessToken, accountId, 
         } catch (e) {}
     }
 
+    const needsMoreProfile = (p) => !p || !hasIdentity(p) || !hasAvatar(p);
+
     // Strategy 2: client.getUserInfo() (Standard SDK)
     // Continue if profile is missing or incomplete
-    if (!profile || (!hasIdentity(profile) && !hasAvatar(profile))) {
+    if (needsMoreProfile(profile)) {
         if (client?.getUserInfo) {
             try { 
                 const p = await client.getUserInfo();
@@ -75,7 +77,7 @@ export async function fetchViverseProfile(vSdk, client, accessToken, accountId, 
     }
 
     // Strategy 3: client.getUser() (Legacy/Iframe)
-    if (!profile || (!hasIdentity(profile) && !hasAvatar(profile))) {
+    if (needsMoreProfile(profile)) {
         if (client?.getUser) {
             try { 
                 const p = await client.getUser(); 
@@ -85,7 +87,7 @@ export async function fetchViverseProfile(vSdk, client, accessToken, accountId, 
     }
 
     // Strategy 4: client.getProfileByToken() (Alternative)
-    if (!profile || (!hasIdentity(profile) && !hasAvatar(profile))) {
+    if (needsMoreProfile(profile)) {
         if (client?.getProfileByToken) {
             try { 
                 const p = await client.getProfileByToken(accessToken); 
@@ -95,7 +97,7 @@ export async function fetchViverseProfile(vSdk, client, accessToken, accountId, 
     }
 
     // Strategy 5: Direct API Call (Last Resort)
-    if ((!profile || (!hasIdentity(profile) && !hasAvatar(profile))) && accessToken) {
+    if (needsMoreProfile(profile) && accessToken) {
         try {
             const resp = await fetch('https://account-profile.htcvive.com/SS/Profiles/v3/Me', {
                 headers: { 'Authorization': `Bearer ${accessToken}` }
@@ -146,6 +148,25 @@ export async function fetchViverseProfile(vSdk, client, accessToken, accountId, 
 }
 ```
 
+## Critical Execution Notes (Do Not Skip)
+
+1. **Use resolved SDK instance from current init cycle**
+- Pass `resolvedSdk` directly into profile fetch.
+- Do not wait for React `setSdk(...)` state propagation before `avatar.getProfile()`.
+
+2. **Bridge wait before profile enrichment**
+- If `resolvedSdk?.bridge?.isReady === false`, wait 500ms and then run fallback chain.
+
+```javascript
+if (resolvedSdk?.bridge?.isReady === false) {
+  await new Promise((r) => setTimeout(r, 500));
+}
+const fullProfile = await fetchViverseProfile(resolvedSdk, client, token, accountId, authData);
+```
+
+3. **No-downgrade merge rule**
+- Never overwrite a specific resolved name with generic placeholders (`VIVERSE Player`, `Player-*`).
+
 ## Usage Example
 
 ```javascript
@@ -166,7 +187,7 @@ async function checkAuth() {
     }
 
     // 2. Fetch Profile Robustly
-    const vSdk = window.viverse || window.VIVERSE_SDK;
+    const vSdk = window.viverse || window.VIVERSE_SDK || window.vSdk;
     const profile = await fetchViverseProfile(
         vSdk, 
         client, 

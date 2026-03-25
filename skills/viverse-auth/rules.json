@@ -65,6 +65,42 @@
       "pattern": "(?:\\|\\||\\?\\?|:\\s*)\\s*['\\\"]VIVERSE Explorer['\\\"]|name\\s*:\\s*['\\\"]VIVERSE Explorer['\\\"]|displayName\\s*:\\s*['\\\"]VIVERSE Explorer['\\\"]",
       "message": "Fallback display name must not default to 'VIVERSE Explorer'.",
       "severity": "medium"
+    },
+    {
+      "id": "auth-single-bootstrap-guard",
+      "profiles": ["auth"],
+      "phases": ["auth_preflight", "gameplay", "fix"],
+      "type": "required_any",
+      "pattern": "useRef\\s*\\(\\s*false\\s*\\)|initOnceRef|if\\s*\\(\\s*initOnceRef\\.current\\s*\\)\\s*return",
+      "message": "Auth initialization must be guarded as one-shot to prevent repeated checkAuth loops.",
+      "severity": "high"
+    },
+    {
+      "id": "auth-bridge-ready-delay",
+      "profiles": ["auth"],
+      "phases": ["auth_preflight", "gameplay", "fix"],
+      "type": "required_any",
+      "pattern": "bridge\\?\\.isReady\\s*===\\s*false|bridge\\.isReady\\s*===\\s*false|setTimeout\\(.*500",
+      "message": "Auth profile enrichment must apply 500ms bridge-ready delay when bridge is not ready.",
+      "severity": "high"
+    },
+    {
+      "id": "auth-resolved-sdk-profile-fetch",
+      "profiles": ["auth"],
+      "phases": ["auth_preflight", "gameplay", "fix"],
+      "type": "required_any",
+      "pattern": "fetchProfile\\s*\\([^\\)]*resolvedSdk|resolvedSdk\\s*\\?\\.avatar|const\\s+sdkRef\\s*=\\s*resolvedSdk\\s*\\|\\|\\s*sdk",
+      "message": "Profile fetch must use the currently detected SDK instance in the same init cycle.",
+      "severity": "high"
+    },
+    {
+      "id": "auth-no-profile-downgrade",
+      "profiles": ["auth"],
+      "phases": ["gameplay", "fix"],
+      "type": "required_any",
+      "pattern": "VIVERSE Player|Player-.*(overwrite|downgrade)|isGeneric\\s*=|if\\s*\\(!isGeneric\\(",
+      "message": "Auth/profile merge must avoid downgrading specific names to generic fallback.",
+      "severity": "medium"
     }
   ]
 }

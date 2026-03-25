@@ -89,6 +89,30 @@ if (data?.type === "requestState" && isMaster) {
 }
 ```
 
+### 3.1 Host Replay Window for Missed Start Packets
+
+**Problem**: Joiner can connect to room but miss the first `gameStateUpdate`, then remain in "waiting for start".
+
+**Fix**: Host replays authoritative state for a short interval (or continuously while session active).
+
+```javascript
+useEffect(() => {
+  if (!isHost || !gameState.isStarted || actors.length < 2) return;
+  const t = setInterval(() => {
+    sendMessage({ type: "gameStateUpdate", data: gameState });
+  }, 1200);
+  return () => clearInterval(t);
+}, [isHost, gameState, actors.length]);
+```
+
+Also apply monotonic version guard to avoid stale overwrite:
+
+```javascript
+const prevVersion = Number(prev?.stateVersion || 0);
+const nextVersion = Number(incoming?.stateVersion || 0);
+if (nextVersion <= prevVersion) return prev;
+```
+
 ### 4. Connection Timing
 
 **Ensure**:

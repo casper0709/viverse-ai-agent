@@ -20,6 +20,7 @@ class OrchestratorService {
         this.maxComplianceFixAttemptsPerSignature = 2;
         this.maxAutoTestFixAttemptsPerSignature = 2;
         this.maxAuthPreflightFixAttemptsPerSignature = 2;
+        this.maxTransientInfraRetriesPerTask = Number(process.env.ORCH_MAX_TRANSIENT_INFRA_RETRIES || 10);
     }
 
     _isFixTask(task = {}) {
@@ -37,6 +38,53 @@ class OrchestratorService {
         const asksFix = /\b(fix|patch|harden|regression|issue|error|bug)\b/.test(t);
         const asksNewBuild = /\b(new app|create app|generate app|from scratch|new template)\b/.test(t);
         return asksResume && asksFix && !asksNewBuild;
+    }
+
+    _isTransientInfraErrorText(reason = "") {
+        const text = String(reason || '').toLowerCase();
+        return (
+            /gemini rest(?: stream)? error\s+5\d\d/i.test(text) ||
+            text.includes('service unavailable') ||
+            text.includes('status":"unavailable"') ||
+            text.includes('"status": "unavailable"') ||
+            text.includes('gateway timeout') ||
+            text.includes('bad gateway') ||
+            text.includes('upstream connect error') ||
+            text.includes('fetch failed') ||
+            text.includes('network error') ||
+            text.includes('socket hang up') ||
+            text.includes('etimedout') ||
+            text.includes('econnreset')
+        );
+    }
+
+    _computeTransientInfraRetryDelayMs(attempt = 1) {
+        const n = Math.max(1, Number(attempt || 1));
+        const base = Math.min(60000, 2000 * Math.pow(2, Math.max(0, n - 1)));
+        return base + Math.floor(Math.random() * 500);
+    }
+
+    _reviveTransientInfraFailedTasks(state, { isResumeCommand = false } = {}) {
+        if (!state || !Array.isArray(state.tasks) || !isResumeCommand) return [];
+        const revived = [];
+        const events = Array.isArray(state?.runReport?.events) ? state.runReport.events : [];
+        for (const t of state.tasks) {
+            if (t?.status !== 'failed') continue;
+            const eventReason = events
+                .slice()
+                .reverse()
+                .find((e) => String(e?.type || '') === 'task_failed' && String(e?.taskId || '') === String(t?.id || ''))?.reason;
+            const reason = String(t?.lastError || t?.failureReason || t?.reason || t?.error || eventReason || '');
+            const isFixFamily = /^(?:fix_|c_fix_|v_fix_|autotest_fix_|authfix_|preflight_fix_)/i.test(String(t?.id || ''));
+            const shouldReviveWithoutReason = !reason && isFixFamily;
+            if (!this._isTransientInfraErrorText(reason) && !shouldReviveWithoutReason) continue;
+            t.status = 'pending';
+            t.transientInfraRetryCount = Number(t.transientInfraRetryCount || 0);
+            t.transientInfraRetryAt = Date.now();
+            t.lastError = reason || 'Resume command: reviving failed fix-loop task without persisted failure reason.';
+            revived.push(String(t.id || ''));
+        }
+        return revived;
     }
 
     _ensureRuntimeFlagsShape(state) {
@@ -357,10 +405,73 @@ ${scopeGuard}`,
         return lines.slice(0, max);
     }
 
+    _escapeRegex(value = "") {
+        return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    _validateSkillComplianceReport(responseText = "", requiredRefs = []) {
+        const text = String(responseText || '');
+        const refs = Array.isArray(requiredRefs) ? requiredRefs.filter(Boolean) : [];
+        if (!refs.length) return { ok: true, reason: '' };
+        const hasSection = /\[SKILL_COMPLIANCE_REPORT\]/i.test(text);
+        if (!hasSection) {
+            return { ok: false, reason: 'Missing [SKILL_COMPLIANCE_REPORT] section in agent response.' };
+        }
+        for (const ref of refs) {
+            const re = new RegExp(`-\\s*${this._escapeRegex(ref)}\\s*:\\s*(PASS|FAIL)\\b`, 'i');
+            const m = text.match(re);
+            if (!m) return { ok: false, reason: `Missing skill compliance entry for '${ref}'.` };
+            if (String(m[1] || '').toUpperCase() !== 'PASS') {
+                return { ok: false, reason: `Skill compliance reported non-PASS for '${ref}'.` };
+            }
+        }
+        return { ok: true, reason: '' };
+    }
+
+    _validateSkillLoadReport(responseText = "", requiredRefs = []) {
+        const text = String(responseText || '');
+        const refs = Array.isArray(requiredRefs) ? requiredRefs.filter(Boolean) : [];
+        if (!refs.length) return { ok: true, reason: '' };
+        const hasSection = /\[SKILL_LOAD_REPORT\]/i.test(text);
+        if (!hasSection) {
+            return { ok: false, reason: 'Missing [SKILL_LOAD_REPORT] section in agent response.' };
+        }
+        for (const ref of refs) {
+            const re = new RegExp(`-\\s*${this._escapeRegex(ref)}\\s*:\\s*(LOADED|BLOCKED)\\b`, 'i');
+            const m = text.match(re);
+            if (!m) return { ok: false, reason: `Missing skill load entry for '${ref}'.` };
+            if (String(m[1] || '').toUpperCase() !== 'LOADED') {
+                return { ok: false, reason: `Skill load reported non-LOADED for '${ref}'.` };
+            }
+        }
+        return { ok: true, reason: '' };
+    }
+
+    _parseSkillSection(responseText = "", sectionName = "SKILL_COMPLIANCE_REPORT") {
+        const text = String(responseText || '');
+        const start = text.search(new RegExp(`\\[${this._escapeRegex(sectionName)}\\]`, 'i'));
+        if (start < 0) return [];
+        const tail = text.slice(start).split('\n').slice(1);
+        const rows = [];
+        for (const line of tail) {
+            const trimmed = String(line || '').trim();
+            if (!trimmed) break;
+            if (!trimmed.startsWith('-')) break;
+            const m = trimmed.match(/^-+\s*([^:]+)\s*:\s*([A-Z_]+)\s*-?\s*(.*)$/i);
+            if (!m) continue;
+            rows.push({
+                ref: String(m[1] || '').trim(),
+                status: String(m[2] || '').trim().toUpperCase(),
+                note: String(m[3] || '').trim()
+            });
+        }
+        return rows;
+    }
+
     async _buildSkillEnforcementBlock(taskPrompt = "", projectContextSummary = "", role = "") {
         const query = `${taskPrompt}\n${projectContextSummary}`;
         const required = this._inferRequiredSkills(query, role);
-        if (!required.length) return "";
+        if (!required.length) return { block: "", requiredRefs: [], missingRefs: [] };
 
         const snippets = [];
         for (const req of required) {
@@ -372,12 +483,14 @@ ${scopeGuard}`,
                 const mustLines = this._extractMustLines(raw, 12);
                 snippets.push({
                     ref: req.skillName === "." ? req.fileName : `${req.skillName}/${req.fileName}`,
-                    mustLines
+                    mustLines,
+                    missing: false
                 });
             } catch (_) {
                 snippets.push({
                     ref: req.skillName === "." ? req.fileName : `${req.skillName}/${req.fileName}`,
-                    mustLines: ["[MISSING SKILL FILE - treat as blocker and report]"]
+                    mustLines: ["[MISSING SKILL FILE - treat as blocker and report]"],
+                    missing: true
                 });
             }
         }
@@ -389,7 +502,10 @@ ${scopeGuard}`,
             })
             .join('\n');
 
-        return `\n\n[STRICT_SKILL_ENFORCEMENT]\nYou MUST implement according to these skill gates. If code conflicts with these gates, update code to match gates.\nRequired skill sources:\n${snippets.map(s => `- ${s.ref}`).join('\n')}\n\nExtracted mandatory gates:\n${bulletLines}\n\nBefore finishing, self-check your output against EVERY required gate above and explicitly mention any gate you could not satisfy.\n`;
+        const requiredRefs = snippets.map((s) => s.ref);
+        const missingRefs = snippets.filter((s) => s.missing).map((s) => s.ref);
+        const block = `\n\n[STRICT_SKILL_ENFORCEMENT]\nYou MUST implement according to these skill gates. If code conflicts with these gates, update code to match gates.\nRequired skill sources:\n${requiredRefs.map(s => `- ${s}`).join('\n')}\n\nExtracted mandatory gates:\n${bulletLines}\n\nMANDATORY EXECUTION RULES:\n1) Before writing code, call tool 'loadSkill' for EACH required skill source above.\n2) If any required skill source cannot be loaded, STOP and report blocker.\n3) Final response MUST include BOTH sections exactly:\n[SKILL_LOAD_REPORT]\n- <skill-ref>: LOADED|BLOCKED - <brief evidence>\n[SKILL_COMPLIANCE_REPORT]\n- <skill-ref>: PASS|FAIL - <brief reason>\n(Include one line for EVERY required skill source in both sections.)\n`;
+        return { block, requiredRefs, missingRefs };
     }
 
     _extractAppIdCandidates(text = "") {
@@ -1443,6 +1559,15 @@ ${scopeGuard}`,
         let projectContextSummary = state.projectContextSummary || "";
         this._ensureRuntimeFlagsShape(state);
         state.projectContextSummary = projectContextSummary;
+        const revivedTransientTasks = this._reviveTransientInfraFailedTasks(state, { isResumeCommand });
+        if (revivedTransientTasks.length > 0) {
+            projectContextSummary += `\n- Revived transient-infra-failed tasks for retry: ${revivedTransientTasks.join(', ')}`;
+            state.projectContextSummary = projectContextSummary;
+            yield {
+                type: 'status',
+                content: `Resuming previously failed transient-infra tasks: ${revivedTransientTasks.join(', ')}.`
+            };
+        }
         await this._bindTemplateContextForRun(state, message, workspacePath);
         this._beginRunReport(state);
         if (state?.templateContext?.templateId) {
@@ -1469,19 +1594,41 @@ ${scopeGuard}`,
             const pendingTasks = state.tasks.filter(t => t.status === 'pending');
             if (pendingTasks.length === 0) break;
 
+            const nowMs = Date.now();
             // Find tasks whose dependencies are met
             const readyTasks = pendingTasks.filter(t => {
-                if (!t.dependsOn || t.dependsOn.length === 0) return true;
-                return t.dependsOn.every(depId => {
+                const depsReady = (!t.dependsOn || t.dependsOn.length === 0) || t.dependsOn.every(depId => {
                     const dep = state.tasks.find(x => x.id === depId);
                     const isDone = dep && dep.status === 'completed';
                     return isDone;
                 });
+                if (!depsReady) return false;
+                const retryAt = Number(t?.transientInfraRetryAt || 0);
+                return !(retryAt > nowMs);
             });
 
             logger.info(`Orchestrator: Tasks pending: ${pendingTasks.length}, Tasks ready: ${readyTasks.length}`);
 
             if (readyTasks.length === 0) {
+                const deferredRetryTasks = pendingTasks.filter((t) => {
+                    const depsReady = (!t.dependsOn || t.dependsOn.length === 0) || t.dependsOn.every(depId => {
+                        const dep = state.tasks.find(x => x.id === depId);
+                        return dep && dep.status === 'completed';
+                    });
+                    if (!depsReady) return false;
+                    const retryAt = Number(t?.transientInfraRetryAt || 0);
+                    return retryAt > Date.now();
+                });
+                if (deferredRetryTasks.length > 0) {
+                    const nextRetryAt = Math.min(...deferredRetryTasks.map((t) => Number(t.transientInfraRetryAt || Date.now())));
+                    const remainingMs = Math.max(0, nextRetryAt - Date.now());
+                    yield {
+                        type: 'status',
+                        content: `Waiting for transient AI infra recovery. Next automatic retry in ~${Math.max(1, Math.ceil(remainingMs / 1000))}s.`
+                    };
+                    await new Promise((resolve) => setTimeout(resolve, Math.min(5000, Math.max(300, remainingMs))));
+                    continue;
+                }
                 const failedTasks = state.tasks.filter(t => t.status === 'failed' || t.status === 'blocked').map(t => t.id);
                 logger.warn(`Orchestrator: Deadlock or finished. Remaining pending tasks: ${pendingTasks.map(t => t.id).join(', ')}. Failed/Blocked: ${failedTasks.join(', ')}`);
                 const reason = failedTasks.length
@@ -1496,6 +1643,9 @@ ${scopeGuard}`,
             for (const task of readyTasks) {
                 let haltExecutionReason = null;
                 const taskStartedAt = Date.now();
+                if (Number(task?.transientInfraRetryAt || 0) > 0) {
+                    task.transientInfraRetryAt = 0;
+                }
                 this._appendRunEvent(state, {
                     type: 'task_started',
                     taskId: task.id,
@@ -1605,11 +1755,30 @@ ${scopeGuard}`,
                 }
 
                 // Context is kept brief to avoid token limits. Agents must rely on file reading.
-                const skillEnforcement = await this._buildSkillEnforcementBlock(
+                const skillPack = await this._buildSkillEnforcementBlock(
                     task.prompt,
                     projectContextSummary,
                     task.role
                 );
+                const skillEnforcement = skillPack.block || "";
+                const requiredSkillRefs = Array.isArray(skillPack.requiredRefs) ? skillPack.requiredRefs : [];
+                const missingSkillRefs = Array.isArray(skillPack.missingRefs) ? skillPack.missingRefs : [];
+                if (missingSkillRefs.length > 0) {
+                    task.status = 'blocked';
+                    const reason = `Skill enforcement blocked: missing required skill sources (${missingSkillRefs.join(', ')}).`;
+                    this._appendRunEvent(state, {
+                        type: 'task_blocked',
+                        taskId: task.id,
+                        role: task.role,
+                        reason
+                    });
+                    projectContextSummary += `\n- ${task.role} BLOCKED: ${reason}`;
+                    state.projectContextSummary = projectContextSummary;
+                    await this._saveState(state);
+                    yield { type: 'status', content: sanitizer.sanitize(reason, credentials) };
+                    await this._finalizeWorkflowState(state, 'paused_or_failed');
+                    return;
+                }
                 const credentialsBlock = task.role?.toUpperCase() === 'CODER' && credentials
                     ? `\n\nUSER VIVERSE CREDENTIALS FOR THIS RUN ONLY:\nEmail: ${credentials.email}\nPassword: ${credentials.password}\n(Do not persist credentials into files or state summaries.)`
                     : '';
@@ -1729,6 +1898,38 @@ ${scopeGuard}`,
                     if (/INVALID_CREDENTIALS/i.test(reason)) {
                         state.runtimeFlags.authInvalid = true;
                     }
+                    const isTransientInfra = this._isTransientInfraErrorText(reason);
+                    if (isTransientInfra) {
+                        const prevAttempts = Number(task.transientInfraRetryCount || 0);
+                        if (prevAttempts < this.maxTransientInfraRetriesPerTask) {
+                            const nextAttempt = prevAttempts + 1;
+                            const delayMs = this._computeTransientInfraRetryDelayMs(nextAttempt);
+                            task.status = 'pending';
+                            task.transientInfraRetryCount = nextAttempt;
+                            task.transientInfraRetryAt = Date.now() + delayMs;
+                            task.lastError = reason;
+                            this._appendRunEvent(state, {
+                                type: 'task_retry_scheduled',
+                                taskId: task.id,
+                                role: task.role,
+                                reason,
+                                retryClass: 'transient_infra',
+                                attempt: nextAttempt,
+                                delayMs
+                            });
+                            projectContextSummary += `\n- ${task.role} transient infra failure on ${task.id}; retry ${nextAttempt}/${this.maxTransientInfraRetriesPerTask} in ${Math.ceil(delayMs / 1000)}s.`;
+                            state.projectContextSummary = projectContextSummary;
+                            await this._saveState(state);
+                            yield {
+                                type: 'status',
+                                content: sanitizer.sanitize(
+                                    `Task ${task.id} hit transient AI infrastructure issue. Auto-retrying in ~${Math.ceil(delayMs / 1000)}s (attempt ${nextAttempt}/${this.maxTransientInfraRetriesPerTask}).`,
+                                    credentials
+                                )
+                            };
+                            continue;
+                        }
+                    }
 
                     const roleUpper = String(task.role || '').toUpperCase();
                     const isCoder = roleUpper === 'CODER';
@@ -1834,6 +2035,7 @@ Use existing workspace artifacts only; do NOT run broad recursive scans or repea
                     }
 
                     task.status = 'failed';
+                    task.lastError = reason;
                     this._appendRunEvent(state, {
                         type: 'task_failed',
                         taskId: task.id,
@@ -1863,6 +2065,87 @@ Use existing workspace artifacts only; do NOT run broad recursive scans or repea
                 }
                 
                 logger.info(`Orchestrator: Agent [${task.role}] stream finished. Response length: ${fullResponse.length}`);
+                const roleUpperPost = String(task.role || '').toUpperCase();
+                if (["CODER", "ARCHITECT", "REVIEWER", "VERIFIER"].includes(roleUpperPost) && requiredSkillRefs.length > 0) {
+                    const loadCheck = this._validateSkillLoadReport(fullResponse, requiredSkillRefs);
+                    if (!loadCheck.ok) {
+                        task.status = 'failed';
+                        const reason = `Skill enforcement failed: ${loadCheck.reason}`;
+                        task.lastError = reason;
+                        this._appendRunEvent(state, {
+                            type: 'task_failed',
+                            taskId: task.id,
+                            role: task.role,
+                            durationMs: Date.now() - taskStartedAt,
+                            reason
+                        });
+                        projectContextSummary += `\n- ${task.role} FAILED: ${reason}`;
+                        state.projectContextSummary = projectContextSummary;
+                        await this._saveState(state);
+                        yield { type: 'status', content: sanitizer.sanitize(reason, credentials) };
+                        yield {
+                            type: 'text',
+                            content: sanitizer.sanitize(`\n\n⚠️ **${task.role} task failed**\nReason: ${reason}`, credentials)
+                        };
+                        await this._finalizeWorkflowState(state, 'paused_or_failed');
+                        return;
+                    }
+                    const skillCheck = this._validateSkillComplianceReport(fullResponse, requiredSkillRefs);
+                    if (!skillCheck.ok) {
+                        task.status = 'failed';
+                        const reason = `Skill enforcement failed: ${skillCheck.reason}`;
+                        task.lastError = reason;
+                        this._appendRunEvent(state, {
+                            type: 'task_failed',
+                            taskId: task.id,
+                            role: task.role,
+                            durationMs: Date.now() - taskStartedAt,
+                            reason
+                        });
+                        projectContextSummary += `\n- ${task.role} FAILED: ${reason}`;
+                        state.projectContextSummary = projectContextSummary;
+                        await this._saveState(state);
+                        yield { type: 'status', content: sanitizer.sanitize(reason, credentials) };
+                        yield {
+                            type: 'text',
+                            content: sanitizer.sanitize(`\n\n⚠️ **${task.role} task failed**\nReason: ${reason}`, credentials)
+                        };
+                        await this._finalizeWorkflowState(state, 'paused_or_failed');
+                        return;
+                    }
+
+                    const loadRows = this._parseSkillSection(fullResponse, 'SKILL_LOAD_REPORT');
+                    const complianceRows = this._parseSkillSection(fullResponse, 'SKILL_COMPLIANCE_REPORT');
+                    const skillReport = {
+                        taskId: String(task.id || ''),
+                        role: String(task.role || ''),
+                        requiredRefs: requiredSkillRefs,
+                        load: loadRows,
+                        compliance: complianceRows,
+                        createdAt: new Date().toISOString()
+                    };
+                    this._appendRunEvent(state, {
+                        type: 'skill_compliance_report',
+                        taskId: task.id,
+                        role: task.role,
+                        requiredCount: requiredSkillRefs.length,
+                        loadCount: loadRows.length,
+                        complianceCount: complianceRows.length
+                    });
+                    try {
+                        const dir = path.join(workspacePath, 'artifacts', 'skill-compliance');
+                        await fs.mkdir(dir, { recursive: true });
+                        const out = path.join(dir, `${String(task.id || 'task')}.json`);
+                        await fileService.writeFile(
+                            out,
+                            JSON.stringify(skillReport, null, 2),
+                            undefined,
+                            { skipTemplateEnforcement: true }
+                        );
+                    } catch (e) {
+                        logger.warn(`Skill report artifact write failed: ${e.message}`);
+                    }
+                }
                 if (String(task.role || '').toUpperCase() === 'CODER') {
                     state.runtimeFlags = state.runtimeFlags || {};
                     state.runtimeFlags.lastCoderComplianceClaim = {

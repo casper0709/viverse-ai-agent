@@ -98,6 +98,42 @@
       "pattern": "roomId\\s*=.*\\|\\|.*\\|\\||if\\s*\\(!\\s*roomId\\s*\\)\\s*throw\\s+new\\s+Error\\s*\\(\\s*['\\\"`]roomId is required['\\\"`]",
       "message": "MultiplayerClient initialization must normalize roomId and hard-fail when roomId is missing.",
       "severity": "high"
+    },
+    {
+      "id": "mp-room-leave-lifecycle",
+      "profiles": ["multiplayer"],
+      "phases": ["gameplay", "fix"],
+      "type": "required_any",
+      "pattern": "leaveRoom\\s*\\(|closeRoom\\s*\\(",
+      "message": "Room lifecycle cleanup path is required (leaveRoom and host closeRoom when applicable).",
+      "severity": "high"
+    },
+    {
+      "id": "mp-start-game-path",
+      "profiles": ["multiplayer"],
+      "phases": ["gameplay", "fix"],
+      "type": "required_any",
+      "pattern": "startGame\\s*\\(",
+      "message": "Matchmaking flow should include a startGame path (or equivalent start gate) for room sessions.",
+      "severity": "medium"
+    },
+    {
+      "id": "mp-null-safe-actor-room-normalization",
+      "profiles": ["multiplayer"],
+      "phases": ["gameplay", "fix"],
+      "type": "required_any",
+      "pattern": "if\\s*\\(!\\s*actor\\s*\\|\\|\\s*typeof\\s+actor\\s*!==\\s*['\\\"]object['\\\"]\\)\\s*return\\s*['\\\"]['\\\"]|asObject\\s*=\\s*\\(|actorIdOf\\s*=\\s*\\(",
+      "message": "Actor/room payload normalization must guard null/non-object entries before any .id access.",
+      "severity": "high"
+    },
+    {
+      "id": "mp-late-join-state-recovery",
+      "profiles": ["multiplayer"],
+      "phases": ["gameplay", "fix"],
+      "type": "required_any",
+      "pattern": "requestState|gameStateUpdate|stateVersion|setInterval\\s*\\(",
+      "message": "Multiplayer flow must include late-join state recovery (requestState or host replay with versioning).",
+      "severity": "high"
     }
   ]
 }

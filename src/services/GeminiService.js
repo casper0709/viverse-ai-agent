@@ -619,6 +619,30 @@ Available Documentation (Use 'readDoc' to read):
         return code === 429 || msg.includes('429') || msg.toLowerCase().includes('quota exceeded') || msg.toLowerCase().includes('too many requests');
     }
 
+    _isTransientInfraError(error) {
+        const msg = String(error?.message || error || '').toLowerCase();
+        const code = Number(error?.status || error?.code || 0);
+        if (code >= 500 && code <= 599) return true;
+        return (
+            msg.includes('service unavailable') ||
+            msg.includes('status":"unavailable"') ||
+            msg.includes('"status": "unavailable"') ||
+            msg.includes('upstream connect error') ||
+            msg.includes('gateway timeout') ||
+            msg.includes('bad gateway') ||
+            msg.includes('etimedout') ||
+            msg.includes('econnreset') ||
+            msg.includes('socket hang up') ||
+            msg.includes('fetch failed') ||
+            msg.includes('network error') ||
+            msg.includes('temporarily unavailable')
+        );
+    }
+
+    _isRetryableGeminiError(error) {
+        return this._isRateLimitError(error) || this._isTransientInfraError(error);
+    }
+
     _extractRetryDelayMs(error, attempt = 1) {
         const msg = String(error?.message || error || '');
         const secFromRetryIn = msg.match(/retry in\s+([0-9]+(?:\.[0-9]+)?)s?/i);
@@ -627,7 +651,10 @@ Available Documentation (Use 'readDoc' to read):
         const secFromRpc = msg.match(/"retryDelay":"([0-9]+)s"/i);
         if (secFromRpc) return Math.ceil(Number(secFromRpc[1]) * 1000) + 250;
 
-        const base = Math.min(120000, 15000 * attempt);
+        const isRateLimit = this._isRateLimitError(error);
+        const base = isRateLimit
+            ? Math.min(120000, 15000 * attempt)
+            : Math.min(30000, 2000 * Math.pow(2, Math.max(0, attempt - 1)));
         return base + Math.floor(Math.random() * 500);
     }
 
@@ -639,11 +666,12 @@ Available Documentation (Use 'readDoc' to read):
             try {
                 return await fn();
             } catch (error) {
-                const canRetry = this._isRateLimitError(error) && attempt <= maxRetries;
+                const canRetry = this._isRetryableGeminiError(error) && attempt <= maxRetries;
                 if (!canRetry) throw error;
 
                 const delayMs = this._extractRetryDelayMs(error, attempt);
-                logger.warn(`GeminiService: ${label} hit rate limit (attempt ${attempt}). Retrying in ${delayMs}ms`);
+                const retryClass = this._isRateLimitError(error) ? 'rate limit' : 'transient infra error';
+                logger.warn(`GeminiService: ${label} hit ${retryClass} (attempt ${attempt}). Retrying in ${delayMs}ms`);
                 await new Promise((resolve) => setTimeout(resolve, delayMs));
             }
         }
