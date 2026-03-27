@@ -118,6 +118,7 @@ After Lambda path works:
 - Generate diff artifacts before apply.
 - Do not apply without explicit approval signal.
 - Keep `Authkey` outside repo and mask it in logs.
+- Run post-apply API tests (`--test`) that assert env keys and script hashes.
 
 ## Verification Checklist
 
@@ -125,6 +126,7 @@ After Lambda path works:
 - [ ] No key in request URL logs/client console
 - [ ] Lambda `/env` contains required secret keys for target `game_id`
 - [ ] Script exists for each invoked `event_name`
+- [ ] Post-apply API tests pass (env keys present, scripts present/hash-match, jobs API healthy)
 - [ ] Client handles non-succeeded statuses safely
 - [ ] Storage keys contain only non-secret data
 - [ ] Key rotation test passes without frontend rebuild

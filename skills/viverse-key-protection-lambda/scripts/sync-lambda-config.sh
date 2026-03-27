@@ -6,12 +6,13 @@ export LANG=C
 usage() {
   cat <<'EOF'
 Usage:
-  sync-lambda-config.sh [--approve] [--verify] [--base-url URL] [--game-id ID] [--env-file PATH] [--events-json JSON] [--env-keys K1,K2]
+  sync-lambda-config.sh [--approve] [--verify] [--test] [--base-url URL] [--game-id ID] [--env-file PATH] [--events-json JSON] [--env-keys K1,K2]
 
 Behavior:
   - Dry-run by default: fetch current /env + /script, compute diff artifacts, no remote mutation.
   - --approve: apply POST /env and POST /script only when drift exists.
   - --verify: query jobs list after apply and save artifact.
+  - --test: run post-apply API tests (env/script assertions).
 
 Defaults:
   --base-url   https://broadcasting-gateway-gaming.vrprod.viveport.com/api/play-lambda-service/v1
@@ -27,7 +28,7 @@ Examples:
     ./scripts/sync-lambda-config.sh
 
   Apply after review:
-    ./scripts/sync-lambda-config.sh --approve --verify
+    ./scripts/sync-lambda-config.sh --approve --verify --test
 EOF
 }
 
@@ -40,11 +41,13 @@ EVENTS_JSON="${EVENTS_JSON:-}"
 GAME_ID="${GAME_ID:-}"
 APPROVE="false"
 VERIFY="false"
+TEST="false"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --approve) APPROVE="true"; shift ;;
     --verify) VERIFY="true"; shift ;;
+    --test) TEST="true"; shift ;;
     --base-url) BASE_URL="$2"; shift 2 ;;
     --game-id) GAME_ID="$2"; shift 2 ;;
     --env-file) ENV_FILE="$2"; shift 2 ;;
@@ -88,6 +91,27 @@ ts="$(date +%Y%m%d_%H%M%S)"
 ART_DIR="$ROOT_DIR/artifacts/lambda-sync/$ts"
 mkdir -p "$ART_DIR/request" "$ART_DIR/response"
 auth_header="Authkey: ${LAMBDA_AUTHKEY}"
+
+assert_env_keys_present() {
+  local env_json="$1"
+  local missing='[]'
+  local k
+  for k in "${env_keys[@]}"; do
+    k="$(echo "$k" | xargs)"
+    [[ -z "$k" ]] && continue
+    local present
+    present="$(jq -r --arg k "$k" '((.variables // {})[$k] // "") | tostring | length > 0' "$env_json")"
+    if [[ "$present" != "true" ]]; then
+      missing="$(jq -cn --argjson base "$missing" --arg k "$k" '$base + [$k]')"
+    fi
+  done
+  echo "$missing"
+}
+
+assert_script_present() {
+  local script_json="$1"
+  jq -r '.code // .script.code // .data.code // empty | tostring | length > 0' "$script_json"
+}
 
 echo "[1/7] Fetching current env..."
 curl -sS "$BASE_URL/env?game_id=$GAME_ID" -H "$auth_header" > "$ART_DIR/response/current_env.json"
@@ -160,31 +184,101 @@ jq 'with_entries(if (.key | test("KEY|TOKEN|SECRET|PASSWORD|AUTH"; "i")) then .v
 cat "$ART_DIR/summary.json"
 echo "Artifacts: $ART_DIR"
 
-if [[ "$APPROVE" != "true" ]]; then
-  echo "[6/7] Dry-run complete. Re-run with --approve after manual review."
-  exit 0
-fi
-
-echo "[6/7] Apply mode..."
-apply_env="$(jq -r '((.added|length)+(.removed|length)+(.changed|length)) > 0' "$ART_DIR/env_diff.json")"
-if [[ "$apply_env" == "true" ]]; then
-  curl -sS -X POST "$BASE_URL/env" -H "$auth_header" -H "Content-Type: application/json" \
-    --data-binary @"$ART_DIR/request/desired_env_payload.json" > "$ART_DIR/response/apply_env.json"
-fi
-
-while read -r ev; do
-  event_name="$(echo "$ev" | jq -r '.event_name')"
-  changed="$(jq -r --arg event_name "$event_name" '.[] | select(.event_name==$event_name) | .script_changed' "$ART_DIR/script_diff.json")"
-  if [[ "$changed" == "true" ]]; then
-    curl -sS -X POST "$BASE_URL/script" -H "$auth_header" -H "Content-Type: application/json" \
-      --data-binary @"$ART_DIR/request/desired_script_${event_name}.json" > "$ART_DIR/response/apply_script_${event_name}.json"
+if [[ "$APPROVE" == "true" ]]; then
+  echo "[6/8] Apply mode..."
+  apply_env="$(jq -r '((.added|length)+(.removed|length)+(.changed|length)) > 0' "$ART_DIR/env_diff.json")"
+  if [[ "$apply_env" == "true" ]]; then
+    curl -sS -X POST "$BASE_URL/env" -H "$auth_header" -H "Content-Type: application/json" \
+      --data-binary @"$ART_DIR/request/desired_env_payload.json" > "$ART_DIR/response/apply_env.json"
   fi
-done < "$ART_DIR/events.list"
+
+  while read -r ev; do
+    event_name="$(echo "$ev" | jq -r '.event_name')"
+    changed="$(jq -r --arg event_name "$event_name" '.[] | select(.event_name==$event_name) | .script_changed' "$ART_DIR/script_diff.json")"
+    if [[ "$changed" == "true" ]]; then
+      curl -sS -X POST "$BASE_URL/script" -H "$auth_header" -H "Content-Type: application/json" \
+        --data-binary @"$ART_DIR/request/desired_script_${event_name}.json" > "$ART_DIR/response/apply_script_${event_name}.json"
+    fi
+  done < "$ART_DIR/events.list"
+else
+  echo "[6/8] Apply skipped (dry-run mode)."
+  if [[ "$TEST" != "true" ]]; then
+    echo "Dry-run complete. Re-run with --approve after manual review."
+    exit 0
+  fi
+fi
 
 if [[ "$VERIFY" == "true" ]]; then
-  echo "[7/7] Verify via jobs API..."
-  curl -sS "$BASE_URL/jobs?game_id=$GAME_ID&size=20" -H "$auth_header" > "$ART_DIR/response/jobs_latest.json"
+  echo "[7/8] Verify via jobs API..."
+  curl -sS "$BASE_URL/jobs?game_id=$GAME_ID&limit=20" -H "$auth_header" > "$ART_DIR/response/jobs_latest.json"
   echo "Verify artifact: $ART_DIR/response/jobs_latest.json"
 else
-  echo "[7/7] Done (verify skipped)."
+  echo "[7/8] Verify skipped."
+fi
+
+if [[ "$TEST" == "true" ]]; then
+  echo "[8/8] Running post-apply API tests..."
+  mkdir -p "$ART_DIR/tests"
+  curl -sS "$BASE_URL/env?game_id=$GAME_ID" -H "$auth_header" > "$ART_DIR/tests/env_after_apply.json"
+  missing_env_keys="$(assert_env_keys_present "$ART_DIR/tests/env_after_apply.json")"
+
+  echo '[]' > "$ART_DIR/tests/script_tests.json"
+  while read -r ev; do
+    event_name="$(echo "$ev" | jq -r '.event_name')"
+    script_path="$(echo "$ev" | jq -r '.script_path')"
+    curl -sS "$BASE_URL/script?game_id=$GAME_ID&event_name=$event_name" -H "$auth_header" > "$ART_DIR/tests/script_after_apply_${event_name}.json"
+    script_present="$(assert_script_present "$ART_DIR/tests/script_after_apply_${event_name}.json")"
+    remote_code="$(jq -r '.code // .script.code // .data.code // empty' "$ART_DIR/tests/script_after_apply_${event_name}.json")"
+    local_code="$(cat "$ROOT_DIR/$script_path")"
+    remote_hash="$(printf '%s' "$remote_code" | shasum -a 256 | awk '{print $1}')"
+    local_hash="$(printf '%s' "$local_code" | shasum -a 256 | awk '{print $1}')"
+    jq --arg event_name "$event_name" \
+       --arg script_path "$script_path" \
+       --arg remote_hash "$remote_hash" \
+       --arg local_hash "$local_hash" \
+       --argjson script_present "$script_present" \
+      '. + [{
+        event_name:$event_name,
+        script_path:$script_path,
+        script_present:$script_present,
+        hash_match:($remote_hash == $local_hash),
+        remote_hash:$remote_hash,
+        local_hash:$local_hash
+      }]' "$ART_DIR/tests/script_tests.json" > "$ART_DIR/tests/script_tests.tmp.json"
+    mv "$ART_DIR/tests/script_tests.tmp.json" "$ART_DIR/tests/script_tests.json"
+  done < "$ART_DIR/events.list"
+
+  curl -sS "$BASE_URL/jobs?game_id=$GAME_ID&limit=20" -H "$auth_header" > "$ART_DIR/tests/jobs_latest.json"
+  jobs_api_ok="$(jq -r '(.success == true) or (.jobs != null)' "$ART_DIR/tests/jobs_latest.json")"
+  script_fail_count="$(jq -r '[.[] | select((.script_present != true) or (.hash_match != true))] | length' "$ART_DIR/tests/script_tests.json")"
+  missing_env_count="$(jq -r 'length' <<<"$missing_env_keys")"
+
+  jq -cn \
+    --arg game_id "$GAME_ID" \
+    --argjson missing_env_keys "$missing_env_keys" \
+    --arg missing_env_count "$missing_env_count" \
+    --arg script_fail_count "$script_fail_count" \
+    --argjson jobs_api_ok "$jobs_api_ok" \
+    --slurpfile script_tests "$ART_DIR/tests/script_tests.json" \
+    '{
+      ok: (($missing_env_count|tonumber)==0 and ($script_fail_count|tonumber)==0 and $jobs_api_ok==true),
+      game_id:$game_id,
+      checks:{
+        env_keys_present:(($missing_env_count|tonumber)==0),
+        missing_env_keys:$missing_env_keys,
+        scripts_present_and_match:(($script_fail_count|tonumber)==0),
+        jobs_api_ok:$jobs_api_ok
+      },
+      script_tests:$script_tests[0]
+    }' > "$ART_DIR/tests/test_summary.json"
+
+  cat "$ART_DIR/tests/test_summary.json"
+  test_ok="$(jq -r '.ok' "$ART_DIR/tests/test_summary.json")"
+  if [[ "$test_ok" != "true" ]]; then
+    echo "Post-apply API tests failed. See artifacts: $ART_DIR/tests" >&2
+    exit 1
+  fi
+  echo "Post-apply API tests passed. Artifacts: $ART_DIR/tests"
+else
+  echo "[8/8] Test skipped."
 fi

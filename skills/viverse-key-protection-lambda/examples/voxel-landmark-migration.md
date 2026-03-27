@@ -23,9 +23,8 @@
 1. Plan: read current `/env` + `/script`, compute drift artifacts.
 2. Human approval: review redacted diff.
 3. Apply: upsert changed env/script only.
-4. Verify: smoke invoke each event and check jobs.
+4. Verify + Test: assert env/script via API, compare script hashes, check jobs API health.
 
 ## Important Tradeoff
 
 `invoke()` is job-style. Use it for bootstrap and business APIs, not high-frequency tile proxying.
-
