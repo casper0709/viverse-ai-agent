@@ -2,12 +2,19 @@
 
 VIVERSE AI Agent is a specialized, context-aware metaverse assistant designed to bridge the gap between AI discovery and 3D immersive environments. It serves as an intelligent scout for VIVERSE worlds and a helpful collaborator for metaverse development.
 
+## ⚠️ Breaking Change
+
+- As of this version, `skills/` is no longer maintained in this repository.
+- Skills are now loaded from the external `viverse-sdk-skills` repository.
+
 ## 🚀 Features
 
 - **Discovery Chat**: A natural language interface to search for VIVERSE worlds, spaces, and landmarks.
-- **Multi-Tab Dashboard**: Seamlessly explore worlds and manage portals without leaving the dashboard.
-- **Smart World Preview**: Instant iframe-based exploration for VIVERSE content.
-- **Portal Knowledge Base**: Built-in awareness of official VIVERSE creator tools (Studio, Create, Avatar).
+- **Interactive App Build Workflow**: Plans and executes multi-step build/fix/publish tasks through orchestrated agent roles.
+- **Verified Skill Enforcement**: Applies skill-gated checks and compliance reporting during implementation workflows.
+- **Multi-Tab Dashboard**: Explore worlds and monitor agent progress without leaving the dashboard.
+- **Smart World Preview**: Iframe preview support and runtime verification hooks for generated apps/worlds.
+- **Knowledge + Skill Integration**: Uses internal `docs/` plus external `viverse-sdk-skills` content for grounded guidance.
 - **Contextual Search**: Leverages the VIVERSE CMS Room Search API for real-time content discovery.
 - **External Request Support**: Built to be discoverable and accessible by other AI systems or remote clients.
 
@@ -40,9 +47,15 @@ This agent loads skills from that repository through environment configuration.
 
 ### Installation
 
-1. Clone the repository.
+1. Clone both repositories:
+   ```bash
+   cd /path/to/workspace
+   git clone <agent-repo-url> viverse-ai-agent
+   git clone <skills-repo-url> viverse-sdk-skills
+   ```
 2. Install dependencies:
    ```bash
+   cd viverse-ai-agent
    npm install
    ```
 3. Create a `.env` file in the root directory:
@@ -60,11 +73,14 @@ This agent loads skills from that repository through environment configuration.
    VIVERSE_AGENT_ENDPOINT=http://localhost:3000/api/ai/chat
    API_HUB_BASE_URL=https://api.viverse.com
 
-   # External skills source (recommended)
+   # External skills source (recommended if not using side-by-side default)
    VIVERSE_SKILLS_REPO=/absolute/path/to/viverse-sdk-skills
    # Optional alternative:
    # VIVERSE_SKILLS_DIR=/absolute/path/to/viverse-sdk-skills/skills
    ```
+4. Skills path resolution:
+   - Default: agent auto-resolves `../viverse-sdk-skills/skills` (side-by-side checkout).
+   - Override with `VIVERSE_SKILLS_REPO` or `VIVERSE_SKILLS_DIR` if your layout differs.
 
 ### Running the Agent
 
@@ -79,7 +95,7 @@ This agent loads skills from that repository through environment configuration.
 
 ## ✅ Simple Usage
 
-1. Start the agent (`npm run dev`).
+1. Start the agent (`npm run start` or `npm run dev`).
 2. Open the dashboard in your browser.
 3. Ask a concrete task, for example:
    - "Integrate VIVERSE login in my app."
@@ -101,7 +117,7 @@ This agent loads skills from that repository through environment configuration.
    cd viverse-ai-agent
    npm install
    ```
-3. Set skills source:
+3. Set skills source (only if not using the default side-by-side path):
    ```bash
    export VIVERSE_SKILLS_REPO=/path/to/workspace/viverse-sdk-skills
    ```
@@ -121,7 +137,9 @@ This agent loads skills from that repository through environment configuration.
 
 ## 📖 Knowledge Base
 
-The agent's intelligence is augmented by the documents in the `docs/` folder. To update its knowledge about VIVERSE portals or SDKs, simply edit the corresponding `.md` file.
+The agent's intelligence is augmented by:
+- `docs/` in this repository (server/platform docs)
+- `viverse-sdk-skills` repository (skill guides, patterns, examples, routes)
 
 ## 🔒 Security
 
