@@ -19,28 +19,15 @@ VIVERSE AI Agent is a specialized, context-aware metaverse assistant designed to
 - `public/`: Frontend dashboard (HTML/CSS/JS).
   - `app.js`: Contains the `TabManager` and dynamic UI logic.
 - `docs/`: Knowledge base documents (SDK info, Portal URLs).
-- `skills/`: Reusable AI skill modules for VIVERSE integrations (auth, multiplayer, avatars, publishing, etc.).
 
-## 🧠 Skills (Knowledge Modules)
+## 🧠 External Skills Repository
 
-Skills are task-focused guides that help AI assistants produce higher-quality implementation steps for common VIVERSE workflows.
+VIVERSE skills are maintained in a separate repository:
 
-Each skill typically includes:
-- `SKILL.md`: when to use the skill, prerequisites, and step-by-step workflow
-- `patterns/`: reusable implementation patterns and troubleshooting notes
-- `examples/`: copyable usage examples
+- `viverse-sdk-skills`
+- Suggested URL format: `https://github.com/<your-username>/viverse-sdk-skills`
 
-Current skills:
-- `playcanvas-avatar-navigation`
-- `playcanvas-googlemaps-3dtiles`
-- `viverse-auth`
-- `viverse-avatar-sdk`
-- `viverse-leaderboard`
-- `viverse-multiplayer`
-- `viverse-world-publishing`
-- `vrma-animation-retargeting`
-
-For the full catalog and structure, see `skills/README.md`.
+This agent loads skills from that repository through environment configuration.
 
 ## 🚦 Getting Started
 
@@ -72,6 +59,11 @@ For the full catalog and structure, see `skills/README.md`.
 
    VIVERSE_AGENT_ENDPOINT=http://localhost:3000/api/ai/chat
    API_HUB_BASE_URL=https://api.viverse.com
+
+   # External skills source (recommended)
+   VIVERSE_SKILLS_REPO=/absolute/path/to/viverse-sdk-skills
+   # Optional alternative:
+   # VIVERSE_SKILLS_DIR=/absolute/path/to/viverse-sdk-skills/skills
    ```
 
 ### Running the Agent
@@ -93,9 +85,39 @@ For the full catalog and structure, see `skills/README.md`.
    - "Integrate VIVERSE login in my app."
    - "Set up matchmaking room create/join flow."
    - "Help publish this world to VIVERSE."
-4. For best results, tell the assistant to load a specific skill first, e.g.:
-   - `Read skills/viverse-multiplayer/SKILL.md and implement move sync.`
-5. If behavior is unclear, check the matching document in `docs/` and related `skills/*/patterns`.
+4. For best results, explicitly mention a skill by name in your prompt.
+5. If behavior is unclear, check `docs/` in this repo and the corresponding skill docs in `viverse-sdk-skills`.
+
+## 📋 SOP: Use External Skills Repo
+
+1. Clone both repositories side-by-side:
+   ```bash
+   cd /path/to/workspace
+   git clone <agent-repo-url> viverse-ai-agent
+   git clone <skills-repo-url> viverse-sdk-skills
+   ```
+2. Install agent dependencies:
+   ```bash
+   cd viverse-ai-agent
+   npm install
+   ```
+3. Set skills source:
+   ```bash
+   export VIVERSE_SKILLS_REPO=/path/to/workspace/viverse-sdk-skills
+   ```
+4. Start the agent:
+   ```bash
+   npm run start
+   ```
+5. Validate skills linkage:
+   - Send a task mentioning a known skill domain (for example, auth or matchmaking).
+   - Confirm responses do not show "Skill not found" and that skill enforcement references expected skill files.
+6. Update skills in day-to-day workflow:
+   ```bash
+   cd /path/to/workspace/viverse-sdk-skills
+   git pull
+   ```
+   Restart `viverse-ai-agent` after skills updates.
 
 ## 📖 Knowledge Base
 

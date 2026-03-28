@@ -23,6 +23,7 @@ class SkillProvider {
         const cwd = process.cwd();
         const fromSkillsDir = String(process.env.VIVERSE_SKILLS_DIR || '').trim();
         const fromSkillsRepo = String(process.env.VIVERSE_SKILLS_REPO || '').trim();
+        const siblingRepo = path.resolve(cwd, '../viverse-sdk-skills');
 
         if (fromSkillsDir) {
             this.skillsDir = path.isAbsolute(fromSkillsDir)
@@ -35,8 +36,9 @@ class SkillProvider {
                 : path.resolve(cwd, fromSkillsRepo);
             this.skillsDir = path.join(this.repoRoot, 'skills');
         } else {
-            this.skillsDir = path.resolve(cwd, 'skills');
-            this.repoRoot = cwd;
+            // Default to a side-by-side external skills repository.
+            this.repoRoot = siblingRepo;
+            this.skillsDir = path.join(this.repoRoot, 'skills');
         }
     }
 

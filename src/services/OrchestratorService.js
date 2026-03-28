@@ -2957,7 +2957,7 @@ Requirements:
             
             const evolutionPrompt = `PROJECT SUCCESSFUL.
             1. Use 'readFile' to inspect '${path.join(state.workspacePath, '.viverse_lessons.json')}'.
-            2. If there are valuable technical lessons, promote them to 'skills/viverse-resilience-guide.md' or create a new skill in the 'skills/' folder.
+            2. If there are valuable technical lessons, promote them to the external skills repository (viverse-sdk-skills), especially 'skills/viverse-resilience-guide.md', or create a new skill folder there.
             3. Then, provide a final wrap-up message to the user including the Live URL and a summary of the 'New Knowledge' acquired.
             
             Project Context:
