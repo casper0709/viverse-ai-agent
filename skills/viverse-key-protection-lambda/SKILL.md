@@ -24,6 +24,7 @@ Use this skill when a project needs:
 3. [patterns/storage-boundary.md](patterns/storage-boundary.md)
 4. [examples/voxel-landmark-migration.md](examples/voxel-landmark-migration.md)
 5. [scripts/sync-lambda-config.sh](scripts/sync-lambda-config.sh) for CI plan/apply bootstrap
+6. [templates/.env.lambda.example](templates/.env.lambda.example) for local env setup
 
 ## Mandatory Compliance Gates (MUST PASS)
 
@@ -119,6 +120,34 @@ After Lambda path works:
 - Do not apply without explicit approval signal.
 - Keep `Authkey` outside repo and mask it in logs.
 - Run post-apply API tests (`--test`) that assert env keys and script hashes.
+
+## CI Runbook (Retained Fix Pattern)
+
+Use the sync script exactly in this order:
+
+1. Plan only:
+   - `bash ./scripts/sync-lambda-config.sh`
+2. Verify + test only:
+   - `bash ./scripts/sync-lambda-config.sh --verify --test`
+3. Apply (manual-approved):
+   - `bash ./scripts/sync-lambda-config.sh --approve --verify --test`
+
+Mandatory guardrails:
+
+- Always provide a real target app id, either:
+  - `--game-id <REAL_APP_ID>`, or
+  - `LAMBDA_GAME_ID=<REAL_APP_ID>` in `.env.lambda.local`.
+- `YOUR_APP_ID` is a hard failure and must never be used in apply mode.
+- Keep `.env.lambda.local` local-only and never commit real credentials.
+
+Required local env keys (see template):
+
+- `LAMBDA_AUTHKEY`
+- `LAMBDA_GAME_ID`
+- `GOOGLE_PLACES_API_KEY`
+- `GOOGLE_PLACES_TEXT_SEARCH_URL` (optional override)
+- `GOOGLE_TILES_API_KEY`
+- `GOOGLE_TILES_ROOT_URL` (optional override)
 
 ## Verification Checklist
 

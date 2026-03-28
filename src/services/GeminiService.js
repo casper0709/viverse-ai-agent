@@ -6,6 +6,7 @@ import logger from '../utils/logger.js';
 import fileService from './FileService.js';
 import searchService from './SearchService.js';
 import AgentRegistry from './AgentRegistry.js';
+import skillProvider from './SkillProvider.js';
 
 // --- FETCH INTERCEPTOR FOR SDK BUG ---
 // The Google Gen AI SDK v0.24.1 strips 'thoughtSignature' from functionCall parts.
@@ -744,7 +745,7 @@ Available Documentation (Use 'readDoc' to read):
     async refreshKnowledge() {
         logger.info('GeminiService: Refreshing dynamic knowledge base...');
         try {
-            const skillsDir = path.resolve(process.cwd(), 'skills');
+            const skillsDir = skillProvider.getSkillsDir();
             const items = await fs.promises.readdir(skillsDir, { withFileTypes: true });
             
             let summary = "Available Skills (Use 'loadSkill' to read full details):\n";
@@ -1065,8 +1066,11 @@ Available Documentation (Use 'readDoc' to read):
                     toolResult = fs.existsSync(docPath) ? fs.readFileSync(docPath, 'utf8') : { error: "Doc not found" };
                 }
                 else if (name === "loadSkill") {
-                    const skillPath = path.resolve(process.cwd(), 'skills', args.skillName, args.fileName);
-                    toolResult = fs.existsSync(skillPath) ? fs.readFileSync(skillPath, 'utf8') : { error: "Skill not found" };
+                    try {
+                        toolResult = await skillProvider.readSkillFile(args.skillName, args.fileName);
+                    } catch {
+                        toolResult = { error: "Skill not found" };
+                    }
                 }
                 else if (name === "addLesson") {
                     const wsState = this._workspaceConvergenceState(workspacePath);

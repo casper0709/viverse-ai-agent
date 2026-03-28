@@ -7,6 +7,8 @@ tags: [viverse, authentication, login, sso]
 
 # VIVERSE Auth Integration
 
+CANARY_SOURCE: local_repo_20260328
+
 Add VIVERSE user authentication to any web project. Supports SSO across VIVERSE experiences.
 
 ## When To Use This Skill
@@ -55,6 +57,8 @@ These are release blockers for any auth integration task:
 10. **MUST** use the currently detected SDK instance for profile strategies in the same init cycle (do not rely on async `setSdk` state before calling `avatar.getProfile()`).
 11. **MUST** apply bridge-ready retry for profile enrichment: when `vSdk.bridge.isReady === false`, wait 500ms before profile fallback chain.
 12. **MUST NOT** downgrade profile quality: generic fallback names (`VIVERSE Player`/`Player-*`) must not overwrite a previously resolved specific name.
+13. **MUST** use a single auth service as source of truth; do not keep parallel `ViverseService` implementations in different folders.
+14. **MUST** resolve App ID robustly: use `VITE_VIVERSE_CLIENT_ID` when valid, and in Worlds iframe fallback to hostname-derived app id (`<appId>-preview.world.viverse.app` -> `<appId>`).
 
 ## Implementation Workflow
 
@@ -301,6 +305,7 @@ function App() {
 - **Flat namespace**: Some SDK versions don't have a `client` constructor — the namespace itself has methods directly. Handle both cases.
 - **checkAuth ≠ profile**: `checkAuth()` only returns auth tokens, NOT user profile data. Use the full fallback chain, not `checkAuth()` fields alone.
 - **Iframe Auth Hang (`checkAuth:ack`)**: If the application hangs on VIVERSE Studio or logs `unhandled methods: VIVERSE_SDK/checkAuth:ack`, it is almost always caused by an **App ID mismatch**. The VIVERSE parent iframe security model prevents the auth handshake if `clientId` (from your `.env` file) does not exactly match the App ID the iframe was launched with. Double check copied `.env` files.
+- **Placeholder App ID trap**: If `.env` still has `VITE_VIVERSE_CLIENT_ID=YOUR_APP_ID`, auth may silently fall back to guest mode in preview even when publish uses correct `--app-id`. Build/runtime must resolve a real app id (env or iframe hostname fallback).
 - **TypeError: Cannot read properties of null (reading 'accountId')**: This occurs when `getProfile()` returns null (often due to App ID mismatch or invalid token) and the code tries to access `profile.accountId` without a check. **Safety Fix**: Always use optional chaining `profile?.accountId` or a null-guard `if (profile)`.
 - **Build-time env trap (Vite/React)**: `import.meta.env.VITE_*` is compiled at build time. If App ID changes, update `.env` and run a fresh `npm run build` before publishing. Re-publishing an old `dist` keeps the old/invalid App ID and causes guest-mode auth.
 - **`unauthorized origin` console noise**: Logs like `Received message from unauthorized origin: https://www.viverse.com` commonly indicate parent-iframe auth security rejecting the handshake (usually App ID mismatch, or redirect URI/origin not registered in Studio). Verify App ID + Studio auth settings together.

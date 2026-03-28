@@ -8,15 +8,13 @@ import templateCertificationService from './templates/TemplateCertificationServi
 import logger from '../utils/logger.js';
 import fs from 'fs/promises';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import sanitizer from '../utils/sanitizer.js';
+import skillProvider from './SkillProvider.js';
 
 class OrchestratorService {
     constructor() {
         this.activeProjects = new Map();
         this.complianceRuntimeCache = new Map();
-        const serviceDir = path.dirname(fileURLToPath(import.meta.url));
-        this.skillsDir = path.resolve(serviceDir, '../../skills');
         this.maxComplianceFixAttemptsPerSignature = 2;
         this.maxAutoTestFixAttemptsPerSignature = 2;
         this.maxAuthPreflightFixAttemptsPerSignature = 2;
@@ -358,37 +356,48 @@ ${scopeGuard}`,
         return { scheduled: true, fixTaskId, signature, attempts: attempts + 1 };
     }
 
-    _inferRequiredSkills(text = "", role = "") {
+    _routeIntentMatchesText(routeTerm = "", text = "") {
+        const term = String(routeTerm || '').trim().toLowerCase();
+        const haystack = String(text || '').toLowerCase();
+        if (!term || !haystack) return false;
+        if (term.includes(' ')) return haystack.includes(term);
+        const re = new RegExp(`(^|[^a-z0-9])${this._escapeRegex(term)}([^a-z0-9]|$)`, 'i');
+        return re.test(haystack) || haystack.includes(term);
+    }
+
+    async _inferRequiredSkills(text = "", role = "") {
         const t = String(text).toLowerCase();
         const picked = new Set();
         const add = (skillName, fileName = "SKILL.md") => picked.add(`${skillName}/${fileName}`);
+        const technicalRole = ["CODER", "ARCHITECT", "VERIFIER", "REVIEWER"].includes(String(role).toUpperCase());
 
-        // Strict scope override for auth preflight and its deterministic fix loops.
-        // Prevent unrelated publish/multiplayer gates from polluting preflight tasks.
+        // Keep auth-preflight focused by suppressing non-auth families.
         const authPreflightScope = /auth preflight only/.test(t);
+        const authPreflightBlockedSkills = new Set([
+            'viverse-multiplayer',
+            'viverse-world-publishing',
+            'viverse-leaderboard'
+        ]);
 
-        // Always enforce resilience baseline for technical agents.
-        if (["CODER", "ARCHITECT", "VERIFIER", "REVIEWER"].includes(String(role).toUpperCase())) {
-            add(".", "viverse-resilience-guide.md");
+        // Baseline resilience still applies to technical roles.
+        if (technicalRole) add(".", "viverse-resilience-guide.md");
+
+        const routes = await skillProvider.readRoutes();
+        const matchedSkills = new Set();
+        for (const route of routes) {
+            const intents = Array.isArray(route?.intent) ? route.intent : [];
+            const skills = Array.isArray(route?.skills) ? route.skills : [];
+            if (!intents.length || !skills.length) continue;
+            const matched = intents.some((term) => this._routeIntentMatchesText(term, t));
+            if (!matched) continue;
+            for (const skillId of skills) matchedSkills.add(String(skillId));
         }
 
-        if (/(auth|sso|checkauth|profile|avatar|login|logout|identity)/.test(t)) {
-            add("viverse-auth", "SKILL.md");
-            add("viverse-auth", "patterns/robust-profile-fetch.md");
-        }
-
-        if (!authPreflightScope && /(multiplayer|matchmaking|room|join|create room|start game|session_id|actor)/.test(t)) {
-            add("viverse-multiplayer", "SKILL.md");
-            add("viverse-multiplayer", "patterns/matchmaking-flow.md");
-            add("viverse-multiplayer", "patterns/move-sync-reliability.md");
-        }
-
-        if (!authPreflightScope && /(leaderboard|score|ranking)/.test(t)) {
-            add("viverse-leaderboard", "SKILL.md");
-        }
-
-        if (!authPreflightScope && /(publish|deploy|app id|world id|viverse-cli)/.test(t)) {
-            add("viverse-world-publishing", "SKILL.md");
+        for (const skillId of matchedSkills) {
+            if (!skillId) continue;
+            if (authPreflightScope && authPreflightBlockedSkills.has(skillId)) continue;
+            const readOrder = await skillProvider.resolveSkillReadOrder(skillId);
+            for (const ref of readOrder) add(skillId, ref);
         }
 
         return [...picked].map((entry) => {
@@ -470,16 +479,13 @@ ${scopeGuard}`,
 
     async _buildSkillEnforcementBlock(taskPrompt = "", projectContextSummary = "", role = "") {
         const query = `${taskPrompt}\n${projectContextSummary}`;
-        const required = this._inferRequiredSkills(query, role);
+        const required = await this._inferRequiredSkills(query, role);
         if (!required.length) return { block: "", requiredRefs: [], missingRefs: [] };
 
         const snippets = [];
         for (const req of required) {
-            const absPath = req.skillName === "."
-                ? path.resolve(this.skillsDir, req.fileName)
-                : path.resolve(this.skillsDir, req.skillName, req.fileName);
             try {
-                const raw = await fs.readFile(absPath, 'utf8');
+                const raw = await skillProvider.readSkillFile(req.skillName, req.fileName);
                 const mustLines = this._extractMustLines(raw, 12);
                 snippets.push({
                     ref: req.skillName === "." ? req.fileName : `${req.skillName}/${req.fileName}`,

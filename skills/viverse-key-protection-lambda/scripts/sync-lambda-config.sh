@@ -22,6 +22,8 @@ Defaults:
 
 Required env:
   - LAMBDA_AUTHKEY
+Optional env:
+  - LAMBDA_GAME_ID (recommended; overrides .env VITE_VIVERSE_CLIENT_ID fallback)
 
 Examples:
   Plan:
@@ -70,12 +72,25 @@ if [[ -z "${LAMBDA_AUTHKEY:-}" ]]; then
   exit 1
 fi
 
+if [[ -z "$GAME_ID" && -n "${LAMBDA_GAME_ID:-}" ]]; then
+  GAME_ID="$(echo "$LAMBDA_GAME_ID" | tr -d '"' | tr -d "'" | xargs)"
+fi
+
 if [[ -z "$GAME_ID" && -f "$ROOT_DIR/.env" ]]; then
   GAME_ID="$(awk -F= '/^VITE_VIVERSE_CLIENT_ID=/{print $2}' "$ROOT_DIR/.env" | tail -n1 | tr -d '"' | tr -d "'")"
 fi
 
 if [[ -z "$GAME_ID" ]]; then
   echo "Missing game id. Provide --game-id or set VITE_VIVERSE_CLIENT_ID in .env" >&2
+  exit 1
+fi
+
+if [[ "$GAME_ID" == "YOUR_APP_ID" ]]; then
+  echo "Invalid game id: YOUR_APP_ID (placeholder)." >&2
+  echo "Set one of the following before running CI:" >&2
+  echo "  1) pass --game-id <REAL_APP_ID>" >&2
+  echo "  2) set LAMBDA_GAME_ID=<REAL_APP_ID> in .env.lambda.local" >&2
+  echo "  3) update .env VITE_VIVERSE_CLIENT_ID=<REAL_APP_ID>" >&2
   exit 1
 fi
 

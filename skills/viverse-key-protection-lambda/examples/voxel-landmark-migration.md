@@ -25,6 +25,18 @@
 3. Apply: upsert changed env/script only.
 4. Verify + Test: assert env/script via API, compare script hashes, check jobs API health.
 
+### Recommended commands
+
+1. `bash ./scripts/sync-lambda-config.sh`
+2. `bash ./scripts/sync-lambda-config.sh --verify --test`
+3. `bash ./scripts/sync-lambda-config.sh --approve --verify --test`
+
+### Guardrails from production incidents
+
+- Always set `LAMBDA_GAME_ID` (or pass `--game-id`) to avoid accidental placeholder scope.
+- Abort if game id is `YOUR_APP_ID`; do not apply.
+- Keep `LAMBDA_AUTHKEY` only in local env and CI secrets, never in repo.
+
 ## Important Tradeoff
 
 `invoke()` is job-style. Use it for bootstrap and business APIs, not high-frequency tile proxying.
